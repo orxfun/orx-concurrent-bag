@@ -1,5 +1,8 @@
 # orx-concurrent-bag
 
+[![orx-concurrent-bag crate](https://img.shields.io/crates/v/orx-concurrent-bag.svg)](https://crates.io/crates/orx-concurrent-bag)
+[![orx-concurrent-bag documentation](https://docs.rs/orx-concurrent-bag/badge.svg)](https://docs.rs/orx-concurrent-bag)
+
 A thread-safe collection allowing growth with immutable reference, making it ideal for collecting results concurrently.
 
 It preserves the order of elements with respect to the order the `push` method is called.
