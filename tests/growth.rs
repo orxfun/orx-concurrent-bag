@@ -88,7 +88,7 @@ fn expected_result(num_threads: usize, num_items_per_thread: usize) -> Vec<i32> 
 }
 
 fn assert_result(num_threads: usize, num_items_per_thread: usize, bag: &ConcurrentBag<i32>) {
-    let mut vec_from_bag: Vec<_> = bag.iter().copied().collect();
+    let mut vec_from_bag: Vec<_> = unsafe { bag.iter() }.copied().collect();
     vec_from_bag.sort();
 
     let expected = expected_result(num_threads, num_items_per_thread);

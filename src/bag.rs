@@ -4,9 +4,14 @@ use std::{cmp::Ordering, fmt::Debug, sync::atomic::AtomicUsize};
 
 const ORDERING: core::sync::atomic::Ordering = core::sync::atomic::Ordering::Relaxed;
 
-/// A thread-safe collection allowing growth with immutable reference, making it ideal for collecting results concurrently.
+/// An efficient and convenient thread-safe grow-only collection, ideal for collecting results concurrently.
+/// * **convenient**: the bag can be shared among threads simply as a shared reference, not even requiring `Arc`,
+/// * **efficient**: for collecting results concurrently:
+///   * rayon is significantly faster than `ConcurrentBag` when the elements are small and there is an extreme load (no work at all among push calls),
+///   * `ConcurrentBag` is significantly faster than rayon when elements are large or there there is some computation happening to evaluate the elements before the push calls,
+///   * you may see the details of the benchmarks at [benches/grow.rs](https://github.com/orxfun/orx-concurrent-bag/blob/main/benches/grow.rs).
 ///
-/// It preserves the order of elements with respect to the order the `push` method is called.
+/// The bag preserves the order of elements with respect to the order the `push` method is called.
 ///
 /// # Examples
 ///
@@ -17,13 +22,10 @@ const ORDERING: core::sync::atomic::Ordering = core::sync::atomic::Ordering::Rel
 /// Following the common approach of using an `Arc`, we can share our bag among threads and collect results concurrently.
 ///
 /// ```rust
-/// use orx_concurrent_bag::*;
+/// use orx_concurrent_bag::prelude::*;
 /// use std::{sync::Arc, thread};
 ///
 /// let (num_threads, num_items_per_thread) = (4, 8);
-///
-/// let mut expected: Vec<_> = (0..num_threads).flat_map(|i| (0..num_items_per_thread).map(move |j| i * 1000 + j)).collect();
-/// expected.sort();
 ///
 /// let bag = Arc::new(ConcurrentBag::new());
 /// let mut thread_vec: Vec<thread::JoinHandle<()>> = Vec::new();
@@ -41,8 +43,10 @@ const ORDERING: core::sync::atomic::Ordering = core::sync::atomic::Ordering::Rel
 ///     handle.join().unwrap();
 /// }
 ///
-/// let mut vec_from_bag: Vec<_> = bag.iter().copied().collect();
+/// let mut vec_from_bag: Vec<_> = unsafe { bag.iter() }.copied().collect();
 /// vec_from_bag.sort();
+/// let mut expected: Vec<_> = (0..num_threads).flat_map(|i| (0..num_items_per_thread).map(move |j| i * 1000 + j)).collect();
+/// expected.sort();
 /// assert_eq!(vec_from_bag, expected);
 /// ```
 ///
@@ -51,13 +55,10 @@ const ORDERING: core::sync::atomic::Ordering = core::sync::atomic::Ordering::Rel
 /// An even more convenient approach would be to use thread scopes. This allows to use shared reference of the bag across threads, instead of `Arc`.
 ///
 /// ```rust
-/// use orx_concurrent_bag::*;
+/// use orx_concurrent_bag::prelude::*;
 /// use std::thread;
 ///
 /// let (num_threads, num_items_per_thread) = (4, 8);
-///
-/// let mut expected: Vec<_> = (0..num_threads).flat_map(|i| (0..num_items_per_thread).map(move |j| i * 1000 + j)).collect();
-/// expected.sort();
 ///
 /// let bag = ConcurrentBag::new();
 /// let bag_ref = &bag; // just take a reference
@@ -71,8 +72,10 @@ const ORDERING: core::sync::atomic::Ordering = core::sync::atomic::Ordering::Rel
 ///     }
 /// });
 ///
-/// let mut vec_from_bag: Vec<_> = bag.iter().copied().collect();
+/// let mut vec_from_bag: Vec<_> = bag.into_inner().iter().copied().collect();
 /// vec_from_bag.sort();
+/// let mut expected: Vec<_> = (0..num_threads).flat_map(|i| (0..num_items_per_thread).map(move |j| i * 1000 + j)).collect();
+/// expected.sort();
 /// assert_eq!(vec_from_bag, expected);
 /// ```
 ///
@@ -83,10 +86,25 @@ const ORDERING: core::sync::atomic::Ordering = core::sync::atomic::Ordering::Rel
 /// This feature makes it safe to grow with a shared reference on a single thread, as implemented by [`ImpVec`](https://crates.io/crates/orx-imp-vec).
 ///
 /// In order to achieve this feature in a concurrent program, `ConcurrentBag` pairs the `SplitVec` with an `AtomicUsize`.
-/// * * `AtomicUsize` fixes the target memory location of each element to be pushed at the time the `push` method is called. Regardless of whether or not writing to memory completes before another element is pushed, every pushed element receives a unique position reserved for it.
+/// * `AtomicUsize` fixes the target memory location of each element to be pushed at the time the `push` method is called. Regardless of whether or not writing to memory completes before another element is pushed, every pushed element receives a unique position reserved for it.
 /// * `SplitVec` guarantees that already pushed elements are not moved around in memory and new elements are written to the reserved position.
 ///
+/// The approach guarantees that
+/// * only one thread can write to the memory location of an element being pushed to the bag,
+/// * at any point in time, only one thread is responsible for the allocation of memory if the bag requires new memory,
+/// * no thread reads any of the written elements (reading happens after converting the bag `into_inner`),
+/// * hence, there exists no race condition.
+///
 /// This pair allows a lightweight and convenient concurrent bag which is ideal for collecting results concurrently.
+///
+/// # Write-Only vs Read-Write
+///
+/// The concurrent bag is write-only & grow-only bag which is convenient and efficient for collecting elements.
+///
+/// See [`ConcurrentVec`](https://crates.io/crates/orx-concurrent-vec) for a read-and-write variant which
+/// * guarantees that reading and writing never happen concurrently, and hence,
+/// * allows safe iteration or access to already written elements of the concurrent vector,
+/// * with a minor additional cost of values being wrapped by an `Option`.
 #[derive(Debug)]
 pub struct ConcurrentBag<T, G = Doubling>
 where
@@ -106,13 +124,13 @@ impl<T> ConcurrentBag<T, Doubling> {
     /// # Examples
     ///
     /// ```rust
-    /// use orx_concurrent_bag::ConcurrentBag;
+    /// use orx_concurrent_bag::prelude::*;
     ///
     /// let bag = ConcurrentBag::new();
     /// bag.push('a');
     /// bag.push('b');
     ///
-    /// assert_eq!(vec!['a', 'b'], bag.iter().copied().collect::<Vec<_>>());
+    /// assert_eq!(vec!['a', 'b'], bag.into_inner().iter().copied().collect::<Vec<_>>());
     /// ```
     pub fn new() -> Self {
         Self::with_doubling_growth()
@@ -127,15 +145,15 @@ impl<T> ConcurrentBag<T, Doubling> {
     /// # Examples
     ///
     /// ```rust
-    /// use orx_concurrent_bag::ConcurrentBag;
+    /// use orx_concurrent_bag::prelude::*;
     ///
-    /// let bag = ConcurrentBag::with_doubling_growth(); // fragments will have capacities 4, 8, 16, etc.
+    /// // fragments will have capacities 4, 8, 16, etc.
+    /// let bag = ConcurrentBag::with_doubling_growth();
     /// bag.push('a');
     /// bag.push('b');
     ///
-    /// assert_eq!(vec!['a', 'b'], bag.iter().copied().collect::<Vec<_>>());
+    /// assert_eq!(vec!['a', 'b'], bag.into_inner().iter().copied().collect::<Vec<_>>());
     /// ```
-    #[allow(clippy::new_without_default)]
     pub fn with_doubling_growth() -> Self {
         let mut vec = SplitVec::new();
         let first_fragment = unsafe { vec.fragments_mut().get_unchecked_mut(0) };
@@ -153,13 +171,13 @@ impl<T> Default for ConcurrentBag<T, Doubling> {
     /// # Examples
     ///
     /// ```rust
-    /// use orx_concurrent_bag::ConcurrentBag;
+    /// use orx_concurrent_bag::prelude::*;
     ///
     /// let bag = ConcurrentBag::default();
     /// bag.push('a');
     /// bag.push('b');
     ///
-    /// assert_eq!(vec!['a', 'b'], bag.iter().copied().collect::<Vec<_>>());
+    /// assert_eq!(vec!['a', 'b'], bag.into_inner().iter().copied().collect::<Vec<_>>());
     /// ```
     fn default() -> Self {
         Self::new()
@@ -176,13 +194,14 @@ impl<T> ConcurrentBag<T, Linear> {
     /// # Examples
     ///
     /// ```rust
-    /// use orx_concurrent_bag::ConcurrentBag;
+    /// use orx_concurrent_bag::prelude::*;
     ///
-    /// let bag = ConcurrentBag::with_linear_growth(5); // each fragment will have a capacity of 2^5
+    /// // each fragment will have a capacity of 2^5 = 32
+    /// let bag = ConcurrentBag::with_linear_growth(5);
     /// bag.push('a');
     /// bag.push('b');
     ///
-    /// assert_eq!(vec!['a', 'b'], bag.iter().copied().collect::<Vec<_>>());
+    /// assert_eq!(vec!['a', 'b'], bag.into_inner().iter().copied().collect::<Vec<_>>());
     /// ```
     pub fn with_linear_growth(constant_fragment_capacity_exponent: usize) -> Self {
         let mut vec = SplitVec::with_linear_growth(constant_fragment_capacity_exponent);
@@ -220,7 +239,7 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
     /// bag.push('b');
     /// bag.push('c');
     /// bag.push('d');
-    /// assert_eq!(vec!['a', 'b', 'c', 'd'], bag.iter().copied().collect::<Vec<_>>());
+    /// assert_eq!(vec!['a', 'b', 'c', 'd'], unsafe { bag.iter() }.copied().collect::<Vec<_>>());
     ///
     /// let mut split = bag.into_inner();
     /// assert_eq!(vec!['a', 'b', 'c', 'd'], split.iter().copied().collect::<Vec<_>>());
@@ -231,7 +250,7 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
     /// assert_eq!(vec!['x', 'b', 'c', 'd', 'e'], split.iter().copied().collect::<Vec<_>>());
     ///
     /// let mut bag: ConcurrentBag<_> = split.into();
-    /// assert_eq!(vec!['x', 'b', 'c', 'd', 'e'], bag.iter().copied().collect::<Vec<_>>());
+    /// assert_eq!(vec!['x', 'b', 'c', 'd', 'e'], unsafe { bag.iter() }.copied().collect::<Vec<_>>());
     ///
     /// bag.clear();
     /// assert!(bag.is_empty());
@@ -244,7 +263,7 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
         split
     }
 
-    /// Returns the number of elements which are pushed to the vector, including the elements which received their reserved locations and currently being pushed.
+    /// ***O(1)*** Returns the number of elements which are pushed to the vector, including the elements which received their reserved locations and currently being pushed.
     ///
     /// # Examples
     ///
@@ -287,6 +306,21 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
 
     /// Returns an iterator to elements of the bag.
     ///
+    /// Iteration of elements is in the order the push method is called.
+    ///
+    /// # Safety
+    ///
+    /// This method is unsafe due to the possibility of the following scenario:
+    /// * a thread reserves a position in the bag,
+    /// * this increases the length of the bag by one, which includes this new element to the iteration,
+    /// * however, before writing the value of the element completes, iterator reaches this element and reads uninitialized value.
+    ///
+    /// Note that [`ConcurrentBag`] is meant to be write-only, or even, grow-only.
+    /// See [`ConcurrentVec`](https://crates.io/crates/orx-concurrent-vec) for a read-and-write variant which
+    /// * guarantees that reading and writing never happen concurrently, and hence,
+    /// * allows safe iteration or access to already written elements of the concurrent vector,
+    /// * with a minor additional cost of values being wrapped by an `Option`.
+    ///
     /// # Examples
     ///
     /// ```rust
@@ -296,12 +330,12 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
     /// bag.push('a');
     /// bag.push('b');
     ///
-    /// let mut iter = bag.iter();
+    /// let mut iter = unsafe { bag.iter() };
     /// assert_eq!(iter.next(), Some(&'a'));
     /// assert_eq!(iter.next(), Some(&'b'));
     /// assert_eq!(iter.next(), None);
     /// ```
-    pub fn iter(&self) -> impl Iterator<Item = &T> {
+    pub unsafe fn iter(&self) -> impl Iterator<Item = &T> {
         self.split.iter().take(self.len())
     }
 
@@ -318,13 +352,10 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
     /// Following the common approach of using an `Arc`, we can share our bag among threads and collect results concurrently.
     ///
     /// ```rust
-    /// use orx_concurrent_bag::*;
+    /// use orx_concurrent_bag::prelude::*;
     /// use std::{sync::Arc, thread};
     ///
     /// let (num_threads, num_items_per_thread) = (4, 8);
-    ///
-    /// let mut expected: Vec<_> = (0..num_threads).flat_map(|i| (0..num_items_per_thread).map(move |j| i * 1000 + j)).collect();
-    /// expected.sort();
     ///
     /// let bag = Arc::new(ConcurrentBag::new());
     /// let mut thread_vec: Vec<thread::JoinHandle<()>> = Vec::new();
@@ -342,8 +373,10 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
     ///     handle.join().unwrap();
     /// }
     ///
-    /// let mut vec_from_bag: Vec<_> = bag.iter().copied().collect();
+    /// let mut vec_from_bag: Vec<_> = unsafe { bag.iter() }.copied().collect();
     /// vec_from_bag.sort();
+    /// let mut expected: Vec<_> = (0..num_threads).flat_map(|i| (0..num_items_per_thread).map(move |j| i * 1000 + j)).collect();
+    /// expected.sort();
     /// assert_eq!(vec_from_bag, expected);
     /// ```
     ///
@@ -353,13 +386,10 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
     /// This allows to use shared reference to the bag directly, instead of `Arc`.
     ///
     /// ```rust
-    /// use orx_concurrent_bag::*;
+    /// use orx_concurrent_bag::prelude::*;
     /// use std::thread;
     ///
     /// let (num_threads, num_items_per_thread) = (4, 8);
-    ///
-    /// let mut expected: Vec<_> = (0..num_threads).flat_map(|i| (0..num_items_per_thread).map(move |j| i * 1000 + j)).collect();
-    /// expected.sort();
     ///
     /// let bag = ConcurrentBag::new();
     /// let bag_ref = &bag; // just take a reference
@@ -373,8 +403,10 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
     ///     }
     /// });
     ///
-    /// let mut vec_from_bag: Vec<_> = bag.iter().copied().collect();
+    /// let mut vec_from_bag: Vec<_> = bag.into_inner().iter().copied().collect();
     /// vec_from_bag.sort();
+    /// let mut expected: Vec<_> = (0..num_threads).flat_map(|i| (0..num_items_per_thread).map(move |j| i * 1000 + j)).collect();
+    /// expected.sort();
     /// assert_eq!(vec_from_bag, expected);
     /// ```
     ///
@@ -532,11 +564,14 @@ mod tests {
     fn iter() {
         let mut bag = ConcurrentBag::new();
 
-        assert_eq!(0, bag.iter().count());
+        assert_eq!(0, unsafe { bag.iter() }.count());
 
         bag.push('a');
 
-        assert_eq!(vec!['a'], bag.iter().copied().collect::<Vec<_>>());
+        assert_eq!(
+            vec!['a'],
+            unsafe { bag.iter() }.copied().collect::<Vec<_>>()
+        );
 
         bag.push('b');
         bag.push('c');
@@ -544,11 +579,11 @@ mod tests {
 
         assert_eq!(
             vec!['a', 'b', 'c', 'd'],
-            bag.iter().copied().collect::<Vec<_>>()
+            unsafe { bag.iter() }.copied().collect::<Vec<_>>()
         );
 
         bag.clear();
-        assert_eq!(0, bag.iter().count());
+        assert_eq!(0, unsafe { bag.iter() }.count());
     }
 
     #[test]
@@ -561,7 +596,7 @@ mod tests {
         bag.push('d');
         assert_eq!(
             vec!['a', 'b', 'c', 'd'],
-            bag.iter().copied().collect::<Vec<_>>()
+            unsafe { bag.iter() }.copied().collect::<Vec<_>>()
         );
 
         let mut split = bag.into_inner();
@@ -581,7 +616,7 @@ mod tests {
         let mut bag: ConcurrentBag<_> = split.into();
         assert_eq!(
             vec!['x', 'b', 'c', 'd', 'e'],
-            bag.iter().copied().collect::<Vec<_>>()
+            unsafe { bag.iter() }.copied().collect::<Vec<_>>()
         );
 
         bag.clear();
