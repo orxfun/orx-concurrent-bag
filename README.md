@@ -5,10 +5,7 @@
 
 An efficient and convenient thread-safe grow-only collection, ideal for collecting results concurrently.
 * **convenient**: the bag can be shared among threads simply as a shared reference, not even requiring `Arc`,
-* **efficient**: for collecting results concurrently:
-  * rayon is significantly faster than `ConcurrentBag` when the elements are small and there is an extreme load (no work at all among push calls),
-  * `ConcurrentBag` is significantly faster than rayon when elements are large or there there is some computation happening to evaluate the elements before the push calls,
-  * you may see the details of the benchmarks at [benches/grow.rs](https://github.com/orxfun/orx-concurrent-bag/blob/main/benches/grow.rs).
+* **efficient**: allows copy-free collecting which makes it performant especially when the type to be collected is not very small (please see the <a href="#section-benchmarks">benchmarks</a> section for tradeoffs and details).
 
 The bag preserves the order of elements with respect to the order the `push` method is called.
 
@@ -33,7 +30,8 @@ for i in 0..num_threads {
     let bag = bag.clone();
     thread_vec.push(thread::spawn(move || {
         for j in 0..num_items_per_thread {
-            bag.push(i * 1000 + j); // concurrently collect results simply by calling `push`
+            // concurrently collect results simply by calling `push`
+            bag.push(i * 1000 + j);
         }
     }));
 }
@@ -65,7 +63,8 @@ std::thread::scope(|s| {
     for i in 0..num_threads {
         s.spawn(move || {
             for j in 0..num_items_per_thread {
-                bag_ref.push(i * 1000 + j); // concurrently collect results simply by calling `push`
+                // concurrently collect results simply by calling `push`
+                bag_ref.push(i * 1000 + j);
             }
         });
     }
@@ -104,3 +103,18 @@ See [`ConcurrentVec`](https://crates.io/crates/orx-concurrent-vec) for a read-an
 * guarantees that reading and writing never happen concurrently, and hence,
 * allows safe iteration or access to already written elements of the concurrent vector,
 * with a minor additional cost of values being wrapped by an `Option`.
+
+<div id="section-benchmarks"></div>
+
+# Benchmarks
+
+*You may see the benchmark at [benches/grow.rs](https://github.com/orxfun/orx-split-vec/blob/main/benches/grow.rs).*
+
+In this benchmark, concurrent results are collected using `ConcurrentBag` together with scoped threads and `Arc`. Computation time performance of these two is negligible, hence, only scoped thread implementation is reported. Results are compared by the `collect` method `rayon`s parallel iterator. 
+
+<img src="https://raw.githubusercontent.com/orxfun/orx-concurrent-bag/main/docs/img/bench_grow.PNG" alt="https://raw.githubusercontent.com/orxfun/orx-concurrent-bag/main/docs/img/bench_grow.PNG" />
+
+We can see that:
+* `rayon` is extremely performant when the data size to be collected is small and there is a huge concurrency load. We can see that it outperforms `ConcurrentBag` when the threads do not do any work at all to produce outputs and the output data is `i32`.
+* On the other hand, when there exists some work to be done to produce the outputs (workload), `ConcurrentBag` starts to perform significantly faster.
+* Similarly, when the output data is large (`[i32; 32]` in this example), regardless of the additional workload, `ConcurrentBag` performs faster.
