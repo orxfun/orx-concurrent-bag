@@ -278,7 +278,7 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
     /// ```
     #[inline(always)]
     pub fn len(&self) -> usize {
-        unsafe { self.len.as_ptr().read() }
+        self.len.load(ORDERING)
     }
 
     /// Returns whether the bag is empty or not.
