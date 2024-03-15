@@ -109,7 +109,7 @@ See [`ConcurrentVec`](https://crates.io/crates/orx-concurrent-vec) for a read-an
 
 # Benchmarks
 
-*You may see the benchmark at [benches/grow.rs](https://github.com/orxfun/orx-split-vec/blob/main/benches/grow.rs).*
+*You may see the benchmark at [benches/grow.rs](https://github.com/orxfun/orx-concurrent-bag/blob/main/benches/grow.rs).*
 
 In this benchmark, concurrent results are collected using `ConcurrentBag` together with scoped threads and `Arc`. Computation time performance of these two is negligible, hence, only scoped thread implementation is reported. Results are compared by the `collect` method `rayon`s parallel iterator. 
 
