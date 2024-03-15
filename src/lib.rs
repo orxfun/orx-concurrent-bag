@@ -3,9 +3,10 @@
 //! [![orx-concurrent-bag crate](https://img.shields.io/crates/v/orx-concurrent-bag.svg)](https://crates.io/crates/orx-concurrent-bag)
 //! [![orx-concurrent-bag documentation](https://docs.rs/orx-concurrent-bag/badge.svg)](https://docs.rs/orx-concurrent-bag)
 //!
-//! An efficient and convenient thread-safe grow-only collection, ideal for collecting results concurrently.
+//! An efficient, convenient and lightweight thread-safe grow-only collection, ideal for collecting results concurrently.
 //! * **convenient**: the bag can be shared among threads simply as a shared reference, not even requiring `Arc`,
-//! * **efficient**: allows copy-free collecting which makes it performant especially when the type to be collected is not very small (please see the <a href="#section-benchmarks">benchmarks</a> section for tradeoffs and details).
+//! * **efficient**: allows copy-free collecting which makes it performant especially when the type to be collected is not very small (please see the <a href="#section-benchmarks">benchmarks</a> section for tradeoffs and details),
+//! * **lightweight**: a minimalistic implementation.
 //!
 //! The bag preserves the order of elements with respect to the order the `push` method is called.
 //!
