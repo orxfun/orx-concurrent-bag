@@ -7,7 +7,7 @@ An efficient, convenient and lightweight grow-only concurrent collection, ideal 
 * **convenient**: the bag can be shared among threads simply as a shared reference, not even requiring `Arc`,
 * **efficient**: for collecting results concurrently:
   * rayon is significantly faster when the elements are small and there is an extreme load (no work at all among push calls);
-  * `ConcurrentBag` is starts to perform faster as elements or the computation in between push calls get larger (see <a href="#section-benchmarks">E. Benchmarks</a> for the experiments).
+  * `ConcurrentBag` starts to perform faster as elements or the computation in between push calls get larger (see <a href="#section-benchmarks">E. Benchmarks</a> for the experiments).
 * **lightweight**: due to the simplistic approach taken, it enables concurrent programs with smaller binary sizes.
 
 The bag preserves the order of elements with respect to the order the `push` method is called.
