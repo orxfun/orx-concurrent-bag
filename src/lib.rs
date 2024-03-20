@@ -6,9 +6,9 @@
 //! An efficient, convenient and lightweight grow-only concurrent collection, ideal for collecting results concurrently.
 //! * **convenient**: the bag can be shared among threads simply as a shared reference, not even requiring `Arc`,
 //! * **efficient**: for collecting results concurrently:
-//!   * rayon is significantly faster than `ConcurrentBag` when the elements are small and there is an extreme load (no work at all among push calls),
-//!   * `ConcurrentBag` is significantly faster than rayon when elements are large or there there is some computation happening to evaluate the elements before the push calls,
-//!   * you may see the details of the benchmarks at [benches/grow.rs](https://github.com/orxfun/orx-concurrent-bag/blob/main/benches/grow.rs).
+//!   * rayon is significantly faster when the elements are small and there is an extreme load (no work at all among push calls);
+//!   * `ConcurrentBag` is starts to perform faster as elements or the computation in between push calls get larger (see <a href="#section-benchmarks">E. Benchmarks</a> for the experiments).
+//! * **lightweight**: due to the simplistic approach taken, it enables concurrent programs with smaller binary sizes.
 //!
 //! The bag preserves the order of elements with respect to the order the `push` method is called.
 //!
@@ -56,7 +56,6 @@
 //!
 //! ```rust
 //! use orx_concurrent_bag::*;
-//! use std::thread;
 //!
 //! let (num_threads, num_items_per_thread) = (4, 8);
 //!
@@ -86,9 +85,8 @@
 //! `PinnedVec` guarantees that elements which are already pushed to the vector stay pinned to their memory locations unless explicitly changed due to removals, which is not the case here since `ConcurrentBag` is a grow-only collection.
 //! This feature makes it safe to grow with a shared reference on a single thread, as implemented by [`ImpVec`](https://crates.io/crates/orx-imp-vec).
 //!
-//! In order to achieve this feature in a concurrent program, `ConcurrentBag` pairs the `PinnedVec` with two `AtomicUsize` information, one for length and the other for capacity.
+//! In order to achieve this feature in a concurrent program, `ConcurrentBag` pairs the `PinnedVec` with an `AtomicUsize`.
 //! * `len: AtomicSize`: fixes the target memory location of each element to be pushed at the time the `push` method is called. Regardless of whether or not writing to memory completes before another element is pushed, every pushed element receives a unique position reserved for it.
-//! * `capacity: AtomicSize`: is responsible by the pinned vector's safe growth, by giving the task to allocate to exactly one thread at a time.
 //! * `PinnedVec` guarantees that already pushed elements are not moved around in memory during growth. This also enables the following mode of concurrency:
 //!   * one thread might allocate new memory in order to grow when capacity is reached,
 //!   * while another thread might concurrently be writing to any of the already allocation memory locations.
@@ -101,9 +99,9 @@
 //!
 //! # Construction
 //!
-//! As explained above, a `ConcurrentBag` is a tuple of three things: a `PinnedVec` and two `AtomicUsize`s.
+//! As explained above, `ConcurrentBag` is simply a tuple of a `PinnedVec` and an `AtomicUsize`..
 //! Therefore, it can be constructed by wrapping any pinned vector; i.e., `ConcurrentBag<T>` implements `From<P: PinnedVec<T>>`.
-//! Further, there exist `with_` methods to directly construct the concurrent bag with common pinned vectors.
+//! Further, there exist `with_` methods to directly construct the concurrent bag with common pinned vector implementations.
 //!
 //! ```rust
 //! use orx_concurrent_bag::*;
@@ -151,6 +149,16 @@
 //! * guarantees that reading and writing never happen concurrently, and hence,
 //! * allows safe iteration or access to already written elements of the concurrent vector,
 //! * with a minor additional cost of values being wrapped by an `Option`.
+//!
+//! <div id="section-benchmarks"></div>
+//!
+//! # Benchmarks
+//!
+//! *You may find the details of the benchmarks at [benches/grow.rs](https://github.com/orxfun/orx-concurrent-bag/blob/main/benches/grow.rs).*
+//!
+//! In the experiment, `ConcurrentBag` variants and `rayon` is used to collect results from multiple threads. You may see in the table below that `rayon` is extremely fast with very small output data (`i32` in this case). As the output size gets larger and copies become costlier, `ConcurrentBag` starts to perform faster.
+//!
+//! <img src="https://raw.githubusercontent.com/orxfun/orx-concurrent-bag/main/docs/img/bench_grow.PNG" alt="https://raw.githubusercontent.com/orxfun/orx-concurrent-bag/main/docs/img/bench_grow.PNG" />
 
 #![warn(
     missing_docs,
