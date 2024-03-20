@@ -94,7 +94,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 ///
 /// # Construction
 ///
-/// As explained above, `ConcurrentBag` is simply a tuple of a `PinnedVec` and an `AtomicUsize`..
+/// As explained above, `ConcurrentBag` is simply a tuple of a `PinnedVec` and an `AtomicUsize`.
 /// Therefore, it can be constructed by wrapping any pinned vector; i.e., `ConcurrentBag<T>` implements `From<P: PinnedVec<T>>`.
 /// Further, there exist `with_` methods to directly construct the concurrent bag with common pinned vector implementations.
 ///
