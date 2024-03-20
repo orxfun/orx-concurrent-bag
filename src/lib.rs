@@ -174,8 +174,6 @@
 
 mod bag;
 mod common_traits;
-/// The concurrent bag prelude, along with the `ConcurrentBag`, imports relevant `SplitVec` and `PinnedVec` types.
-pub mod prelude;
 
 pub use bag::ConcurrentBag;
 pub use orx_fixed_vec::FixedVec;
