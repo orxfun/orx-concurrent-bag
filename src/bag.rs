@@ -1,15 +1,9 @@
-use orx_split_vec::prelude::PinnedVec;
-use orx_split_vec::{Doubling, Fragment, GrowthWithConstantTimeAccess, Linear, SplitVec};
-use std::{cmp::Ordering, fmt::Debug, sync::atomic::AtomicUsize};
+use orx_fixed_vec::FixedVec;
+use orx_split_vec::{Doubling, Linear, PinnedVec, Recursive, SplitVec};
+use std::marker::PhantomData;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-const ORDERING: core::sync::atomic::Ordering = core::sync::atomic::Ordering::Relaxed;
-
-/// An efficient and convenient thread-safe grow-only collection, ideal for collecting results concurrently.
-/// * **convenient**: the bag can be shared among threads simply as a shared reference, not even requiring `Arc`,
-/// * **efficient**: for collecting results concurrently:
-///   * rayon is significantly faster than `ConcurrentBag` when the elements are small and there is an extreme load (no work at all among push calls),
-///   * `ConcurrentBag` is significantly faster than rayon when elements are large or there there is some computation happening to evaluate the elements before the push calls,
-///   * you may see the details of the benchmarks at [benches/grow.rs](https://github.com/orxfun/orx-concurrent-bag/blob/main/benches/grow.rs).
+/// An efficient, convenient and lightweight grow-only concurrent collection, ideal for collecting results concurrently.
 ///
 /// The bag preserves the order of elements with respect to the order the `push` method is called.
 ///
@@ -19,10 +13,10 @@ const ORDERING: core::sync::atomic::Ordering = core::sync::atomic::Ordering::Rel
 ///
 /// ## Using `std::sync::Arc`
 ///
-/// Following the common approach of using an `Arc`, we can share our bag among threads and collect results concurrently.
+/// We can share our bag among threads using `Arc` and collect results concurrently.
 ///
 /// ```rust
-/// use orx_concurrent_bag::prelude::*;
+/// use orx_concurrent_bag::*;
 /// use std::{sync::Arc, thread};
 ///
 /// let (num_threads, num_items_per_thread) = (4, 8);
@@ -34,7 +28,8 @@ const ORDERING: core::sync::atomic::Ordering = core::sync::atomic::Ordering::Rel
 ///     let bag = bag.clone();
 ///     thread_vec.push(thread::spawn(move || {
 ///         for j in 0..num_items_per_thread {
-///             bag.push(i * 1000 + j); // concurrently collect results simply by calling `push`
+///             // concurrently collect results simply by calling `push`
+///             bag.push(i * 1000 + j);
 ///         }
 ///     }));
 /// }
@@ -55,8 +50,7 @@ const ORDERING: core::sync::atomic::Ordering = core::sync::atomic::Ordering::Rel
 /// An even more convenient approach would be to use thread scopes. This allows to use shared reference of the bag across threads, instead of `Arc`.
 ///
 /// ```rust
-/// use orx_concurrent_bag::prelude::*;
-/// use std::thread;
+/// use orx_concurrent_bag::*;
 ///
 /// let (num_threads, num_items_per_thread) = (4, 8);
 ///
@@ -66,7 +60,8 @@ const ORDERING: core::sync::atomic::Ordering = core::sync::atomic::Ordering::Rel
 ///     for i in 0..num_threads {
 ///         s.spawn(move || {
 ///             for j in 0..num_items_per_thread {
-///                 bag_ref.push(i * 1000 + j); // concurrently collect results simply by calling `push`
+///                 // concurrently collect results simply by calling `push`
+///                 bag_ref.push(i * 1000 + j);
 ///             }
 ///         });
 ///     }
@@ -81,13 +76,15 @@ const ORDERING: core::sync::atomic::Ordering = core::sync::atomic::Ordering::Rel
 ///
 /// # Safety
 ///
-/// `ConcurrentBag` uses a [`SplitVec`](https://crates.io/crates/orx-split-vec) as the underlying storage.
-/// `SplitVec` implements [`PinnedVec`](https://crates.io/crates/orx-pinned-vec) which guarantees that elements which are already pushed to the vector stay pinned to their memory locations.
+/// `ConcurrentBag` uses a [`PinnedVec`](https://crates.io/crates/orx-pinned-vec) implementation as the underlying storage (see [`SplitVec`](https://crates.io/crates/orx-split-vec) and [`Fixed`](https://crates.io/crates/orx-fixed-vec)).
+/// `PinnedVec` guarantees that elements which are already pushed to the vector stay pinned to their memory locations unless explicitly changed due to removals, which is not the case here since `ConcurrentBag` is a grow-only collection.
 /// This feature makes it safe to grow with a shared reference on a single thread, as implemented by [`ImpVec`](https://crates.io/crates/orx-imp-vec).
 ///
-/// In order to achieve this feature in a concurrent program, `ConcurrentBag` pairs the `SplitVec` with an `AtomicUsize`.
-/// * `AtomicUsize` fixes the target memory location of each element to be pushed at the time the `push` method is called. Regardless of whether or not writing to memory completes before another element is pushed, every pushed element receives a unique position reserved for it.
-/// * `SplitVec` guarantees that already pushed elements are not moved around in memory and new elements are written to the reserved position.
+/// In order to achieve this feature in a concurrent program, `ConcurrentBag` pairs the `PinnedVec` with an `AtomicUsize`.
+/// * `len: AtomicSize`: fixes the target memory location of each element to be pushed at the time the `push` method is called. Regardless of whether or not writing to memory completes before another element is pushed, every pushed element receives a unique position reserved for it.
+/// * `PinnedVec` guarantees that already pushed elements are not moved around in memory during growth. This also enables the following mode of concurrency:
+///   * one thread might allocate new memory in order to grow when capacity is reached,
+///   * while another thread might concurrently be writing to any of the already allocation memory locations.
 ///
 /// The approach guarantees that
 /// * only one thread can write to the memory location of an element being pushed to the bag,
@@ -95,7 +92,49 @@ const ORDERING: core::sync::atomic::Ordering = core::sync::atomic::Ordering::Rel
 /// * no thread reads any of the written elements (reading happens after converting the bag `into_inner`),
 /// * hence, there exists no race condition.
 ///
-/// This pair allows a lightweight and convenient concurrent bag which is ideal for collecting results concurrently.
+/// # Construction
+///
+/// As explained above, `ConcurrentBag` is simply a tuple of a `PinnedVec` and an `AtomicUsize`..
+/// Therefore, it can be constructed by wrapping any pinned vector; i.e., `ConcurrentBag<T>` implements `From<P: PinnedVec<T>>`.
+/// Further, there exist `with_` methods to directly construct the concurrent bag with common pinned vector implementations.
+///
+/// ```rust
+/// use orx_concurrent_bag::*;
+///
+/// // default pinned vector -> SplitVec<T, Doubling>
+/// let bag: ConcurrentBag<char> = ConcurrentBag::new();
+/// let bag: ConcurrentBag<char> = Default::default();
+/// let bag: ConcurrentBag<char> = ConcurrentBag::with_doubling_growth();
+/// let bag: ConcurrentBag<char, SplitVec<char, Doubling>> = ConcurrentBag::with_doubling_growth();
+///
+/// let bag: ConcurrentBag<char> = SplitVec::new().into();
+/// let bag: ConcurrentBag<char, SplitVec<char, Doubling>> = SplitVec::new().into();
+///
+/// // SplitVec with [Recursive](https://docs.rs/orx-split-vec/latest/orx_split_vec/struct.Recursive.html) growth
+/// let bag: ConcurrentBag<char, SplitVec<char, Recursive>> =
+///     ConcurrentBag::with_recursive_growth();
+/// let bag: ConcurrentBag<char, SplitVec<char, Recursive>> =
+///     SplitVec::with_recursive_growth().into();
+///
+/// // SplitVec with [Linear](https://docs.rs/orx-split-vec/latest/orx_split_vec/struct.Linear.html) growth
+/// // each fragment will have capacity 2^10 = 1024
+/// let bag: ConcurrentBag<char, SplitVec<char, Linear>> = ConcurrentBag::with_linear_growth(10);
+/// let bag: ConcurrentBag<char, SplitVec<char, Linear>> = SplitVec::with_linear_growth(10).into();
+///
+/// // [FixedVec](https://docs.rs/orx-fixed-vec/latest/orx_fixed_vec/) with fixed capacity.
+/// // Fixed vector cannot grow; hence, pushing the 1025-th element to this bag will cause a panic!
+/// let bag: ConcurrentBag<char, FixedVec<char>> = ConcurrentBag::with_fixed_capacity(1024);
+/// let bag: ConcurrentBag<char, FixedVec<char>> = FixedVec::new(1024).into();
+/// ```
+///
+/// Of course, the pinned vector to be wrapped does not need to be empty.
+///
+/// ```rust
+/// use orx_concurrent_bag::*;
+///
+/// let split_vec: SplitVec<i32> = (0..1024).collect();
+/// let bag: ConcurrentBag<_> = split_vec.into();
+/// ```
 ///
 /// # Write-Only vs Read-Write
 ///
@@ -105,124 +144,81 @@ const ORDERING: core::sync::atomic::Ordering = core::sync::atomic::Ordering::Rel
 /// * guarantees that reading and writing never happen concurrently, and hence,
 /// * allows safe iteration or access to already written elements of the concurrent vector,
 /// * with a minor additional cost of values being wrapped by an `Option`.
-#[derive(Debug)]
-pub struct ConcurrentBag<T, G = Doubling>
+pub struct ConcurrentBag<T, P = SplitVec<T, Doubling>>
 where
-    G: GrowthWithConstantTimeAccess,
+    P: PinnedVec<T>,
 {
-    split: SplitVec<T, G>,
+    pinned: P,
     len: AtomicUsize,
+    capacity: usize,
+    phantom: PhantomData<T>,
 }
 
-unsafe impl<T, G: GrowthWithConstantTimeAccess> Sync for ConcurrentBag<T, G> {}
+// new
+impl<T> ConcurrentBag<T, SplitVec<T, Doubling>> {
+    /// Creates a new concurrent vector by creating and wrapping up a new `SplitVec<T, Doubling>` as the underlying storage.
+    pub fn with_doubling_growth() -> Self {
+        Self::new_from_pinned(SplitVec::with_doubling_growth())
+    }
 
-unsafe impl<T, G: GrowthWithConstantTimeAccess> Send for ConcurrentBag<T, G> {}
-
-impl<T> ConcurrentBag<T, Doubling> {
-    /// Creates a new empty concurrent bag.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use orx_concurrent_bag::prelude::*;
-    ///
-    /// let bag = ConcurrentBag::new();
-    /// bag.push('a');
-    /// bag.push('b');
-    ///
-    /// assert_eq!(vec!['a', 'b'], bag.into_inner().iter().copied().collect::<Vec<_>>());
-    /// ```
+    /// Creates a new concurrent vector by creating and wrapping up a new `SplitVec<T, Doubling>` as the underlying storage.
     pub fn new() -> Self {
+        Self::new_from_pinned(SplitVec::new())
+    }
+}
+
+impl<T> Default for ConcurrentBag<T, SplitVec<T, Doubling>> {
+    /// Creates a new concurrent vector by creating and wrapping up a new `SplitVec<T, Doubling>` as the underlying storage.
+    fn default() -> Self {
         Self::with_doubling_growth()
     }
+}
 
-    /// Creates a new empty concurrent bag with doubling growth strategy.
-    ///
-    /// Each fragment of the underlying split vector will have a capacity which is double the capacity of the prior fragment.
-    ///
-    /// More information about doubling strategy can be found here [`orx_split_vec::Doubling`](https://docs.rs/orx-split-vec/latest/orx_split_vec/struct.Doubling.html).
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use orx_concurrent_bag::prelude::*;
-    ///
-    /// // fragments will have capacities 4, 8, 16, etc.
-    /// let bag = ConcurrentBag::with_doubling_growth();
-    /// bag.push('a');
-    /// bag.push('b');
-    ///
-    /// assert_eq!(vec!['a', 'b'], bag.into_inner().iter().copied().collect::<Vec<_>>());
-    /// ```
-    pub fn with_doubling_growth() -> Self {
-        let mut vec = SplitVec::new();
-        let first_fragment = unsafe { vec.fragments_mut().get_unchecked_mut(0) };
-        Self::set_len(first_fragment);
-        Self {
-            split: vec,
-            len: AtomicUsize::new(0),
-        }
+impl<T> ConcurrentBag<T, SplitVec<T, Recursive>> {
+    /// Creates a new concurrent vector by creating and wrapping up a new `SplitVec<T, Recursive>` as the underlying storage.
+    pub fn with_recursive_growth() -> Self {
+        Self::new_from_pinned(SplitVec::with_recursive_growth())
     }
 }
 
-impl<T> Default for ConcurrentBag<T, Doubling> {
-    /// Creates a new empty concurrent bag.
+impl<T> ConcurrentBag<T, SplitVec<T, Linear>> {
+    /// Creates a new concurrent vector by creating and wrapping up a new `SplitVec<T, Linear>` as the underlying storage.
     ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use orx_concurrent_bag::prelude::*;
-    ///
-    /// let bag = ConcurrentBag::default();
-    /// bag.push('a');
-    /// bag.push('b');
-    ///
-    /// assert_eq!(vec!['a', 'b'], bag.into_inner().iter().copied().collect::<Vec<_>>());
-    /// ```
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T> ConcurrentBag<T, Linear> {
-    /// Creates a new empty concurrent bag with linear growth strategy.
-    ///
-    /// Each fragment of the underlying split vector will have a capacity of `2 ^ constant_fragment_capacity_exponent`.
-    ///
-    /// More information about doubling strategy can be found here [`orx_split_vec::Linear`](https://docs.rs/orx-split-vec/latest/orx_split_vec/struct.Linear.html).
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use orx_concurrent_bag::prelude::*;
-    ///
-    /// // each fragment will have a capacity of 2^5 = 32
-    /// let bag = ConcurrentBag::with_linear_growth(5);
-    /// bag.push('a');
-    /// bag.push('b');
-    ///
-    /// assert_eq!(vec!['a', 'b'], bag.into_inner().iter().copied().collect::<Vec<_>>());
-    /// ```
+    /// Note that choosing a small `constant_fragment_capacity_exponent` for a large bag to be filled might lead to too many growth calls which might be computationally costly.
     pub fn with_linear_growth(constant_fragment_capacity_exponent: usize) -> Self {
-        let mut vec = SplitVec::with_linear_growth(constant_fragment_capacity_exponent);
-        let first_fragment = unsafe { vec.fragments_mut().get_unchecked_mut(0) };
-        Self::set_len(first_fragment);
-        Self {
-            split: vec,
-            len: AtomicUsize::new(0),
-        }
+        Self::new_from_pinned(SplitVec::with_linear_growth(
+            constant_fragment_capacity_exponent,
+        ))
     }
 }
 
-impl<T, G: GrowthWithConstantTimeAccess> From<SplitVec<T, G>> for ConcurrentBag<T, G> {
-    fn from(split: SplitVec<T, G>) -> Self {
-        let len = AtomicUsize::new(split.len());
-        Self { split, len }
+impl<T> ConcurrentBag<T, FixedVec<T>> {
+    /// Creates a new concurrent vector by creating and wrapping up a new `FixedVec<T>` as the underlying storage.
+    ///
+    /// # Safety
+    ///
+    /// Note that a `FixedVec` cannot grow.
+    /// Therefore, pushing the `(fixed_capacity + 1)`-th element to the bag will lead to a panic.
+    pub fn with_fixed_capacity(fixed_capacity: usize) -> Self {
+        Self::new_from_pinned(FixedVec::new(fixed_capacity))
     }
 }
 
-impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
-    /// Consumes the concurrent bag and returns the inner storage, the `SplitVec`.
+impl<T, P> From<P> for ConcurrentBag<T, P>
+where
+    P: PinnedVec<T>,
+{
+    fn from(value: P) -> Self {
+        Self::new_from_pinned(value)
+    }
+}
+
+// impl
+impl<T, P> ConcurrentBag<T, P>
+where
+    P: PinnedVec<T>,
+{
+    /// Consumes the concurrent vector and returns the underlying pinned vector.
     ///
     /// Note that
     /// * it is cheap to wrap a `SplitVec` as a `ConcurrentBag` using thee `From` trait;
@@ -231,7 +227,7 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
     /// # Examples
     ///
     /// ```rust
-    /// use orx_concurrent_bag::prelude::*;
+    /// use orx_concurrent_bag::*;
     ///
     /// let bag = ConcurrentBag::new();
     ///
@@ -257,13 +253,13 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
     ///
     /// let split = bag.into_inner();
     /// assert!(split.is_empty());
-    pub fn into_inner(self) -> SplitVec<T, G> {
-        let (len, mut split) = (self.len(), self.split);
-        Self::correct_split_lengths(&mut split, len);
-        split
+    pub fn into_inner(self) -> P {
+        let (len, mut pinned) = (self.len(), self.pinned);
+        unsafe { pinned.set_len(len) };
+        pinned
     }
 
-    /// ***O(1)*** Returns the number of elements which are pushed to the vector, including the elements which received their reserved locations and currently being pushed.
+    /// ***O(1)*** Returns the number of elements which are pushed to the vector, including the elements which received their reserved locations and are currently being pushed.
     ///
     /// # Examples
     ///
@@ -278,7 +274,31 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
     /// ```
     #[inline(always)]
     pub fn len(&self) -> usize {
-        self.len.load(ORDERING)
+        self.len.load(Ordering::SeqCst)
+    }
+
+    /// ***O(1)*** Returns the current capacity of the concurrent bag; i.e., the underlying pinned vector storage.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use orx_concurrent_bag::ConcurrentBag;
+    ///
+    /// let bag = ConcurrentBag::new();
+    /// bag.push('a');
+    /// bag.push('b');
+    ///
+    /// assert_eq!(4, bag.capacity());
+    ///
+    /// bag.push('c');
+    /// bag.push('d');
+    /// bag.push('e');
+    ///
+    /// assert_eq!(12, bag.capacity());
+    /// ```
+    #[inline(always)]
+    pub fn capacity(&self) -> usize {
+        self.capacity
     }
 
     /// Returns whether the bag is empty or not.
@@ -336,7 +356,7 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
     /// assert_eq!(iter.next(), None);
     /// ```
     pub unsafe fn iter(&self) -> impl Iterator<Item = &T> {
-        self.split.iter().take(self.len())
+        self.pinned.iter().take(self.len())
     }
 
     /// Concurrent & thread-safe method to push the given `value` to the back of the bag.
@@ -349,10 +369,10 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
     ///
     /// ## Using `std::sync::Arc`
     ///
-    /// Following the common approach of using an `Arc`, we can share our bag among threads and collect results concurrently.
+    /// We can share our bag among threads using `Arc` and collect results concurrently.
     ///
     /// ```rust
-    /// use orx_concurrent_bag::prelude::*;
+    /// use orx_concurrent_bag::*;
     /// use std::{sync::Arc, thread};
     ///
     /// let (num_threads, num_items_per_thread) = (4, 8);
@@ -364,7 +384,8 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
     ///     let bag = bag.clone();
     ///     thread_vec.push(thread::spawn(move || {
     ///         for j in 0..num_items_per_thread {
-    ///             bag.push(i * 1000 + j); // concurrently collect results simply by calling `push`
+    ///             // concurrently collect results simply by calling `push`
+    ///             bag.push(i * 1000 + j);
     ///         }
     ///     }));
     /// }
@@ -382,11 +403,10 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
     ///
     /// ## Using `std::thread::scope`
     ///
-    /// An even more convenient approach would be to use thread scopes.
-    /// This allows to use shared reference to the bag directly, instead of `Arc`.
+    /// An even more convenient approach would be to use thread scopes. This allows to use shared reference of the bag across threads, instead of `Arc`.
     ///
     /// ```rust
-    /// use orx_concurrent_bag::prelude::*;
+    /// use orx_concurrent_bag::*;
     /// use std::thread;
     ///
     /// let (num_threads, num_items_per_thread) = (4, 8);
@@ -397,7 +417,8 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
     ///     for i in 0..num_threads {
     ///         s.spawn(move || {
     ///             for j in 0..num_items_per_thread {
-    ///                 bag_ref.push(i * 1000 + j); // concurrently collect results simply by calling `push`
+    ///                 // concurrently collect results simply by calling `push`
+    ///                 bag_ref.push(i * 1000 + j);
     ///             }
     ///         });
     ///     }
@@ -412,46 +433,64 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
     ///
     /// # Safety
     ///
-    /// `ConcurrentBag` uses a [`SplitVec`](https://crates.io/crates/orx-split-vec) as the underlying storage.
-    /// `SplitVec` implements [`PinnedVec`](https://crates.io/crates/orx-pinned-vec) which guarantees that elements which are already pushed to the vector stay pinned to their memory locations.
+    /// `ConcurrentBag` uses a [`PinnedVec`](https://crates.io/crates/orx-pinned-vec) implementation as the underlying storage (see [`SplitVec`](https://crates.io/crates/orx-split-vec) and [`Fixed`](https://crates.io/crates/orx-fixed-vec)).
+    /// `PinnedVec` guarantees that elements which are already pushed to the vector stay pinned to their memory locations unless explicitly changed due to removals, which is not the case here since `ConcurrentBag` is a grow-only collection.
     /// This feature makes it safe to grow with a shared reference on a single thread, as implemented by [`ImpVec`](https://crates.io/crates/orx-imp-vec).
     ///
-    /// In order to achieve this feature in a concurrent program, `ConcurrentBag` pairs the `SplitVec` with an `AtomicUsize`.
-    /// * `AtomicUsize` fixes the target memory location of each element being pushed at the point the `push` method is called.
-    /// Regardless of whether or not writing to memory completes before another element is pushed, every pushed element receives a unique position reserved for it.
-    /// * `SplitVec` guarantees that already pushed elements are not moved around in memory and new elements are written to the reserved position.
+    /// In order to achieve this feature in a concurrent program, `ConcurrentBag` pairs the `PinnedVec` with an `AtomicUsize`.
+    /// * `len: AtomicSize`: fixes the target memory location of each element to be pushed at the time the `push` method is called. Regardless of whether or not writing to memory completes before another element is pushed, every pushed element receives a unique position reserved for it.
+    /// * `PinnedVec` guarantees that already pushed elements are not moved around in memory during growth. This also enables the following mode of concurrency:
+    ///   * one thread might allocate new memory in order to grow when capacity is reached,
+    ///   * while another thread might concurrently be writing to any of the already allocation memory locations.
     ///
-    /// This pair allows a lightweight and convenient concurrent bag which is ideal for collecting results concurrently.
+    /// The approach guarantees that
+    /// * only one thread can write to the memory location of an element being pushed to the bag,
+    /// * at any point in time, only one thread is responsible for the allocation of memory if the bag requires new memory,
+    /// * no thread reads any of the written elements (reading happens after converting the bag `into_inner`),
+    /// * hence, there exists no race condition.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the underlying pinned vector fails to grow.
+    /// * Note that `FixedVec` cannot grow beyond its fixed capacity;
+    /// * `SplitVec`, on the other hand, can grow without dynamically.
     pub fn push(&self, value: T) {
         #[allow(invalid_reference_casting)]
         unsafe fn into_mut<'a, T>(reference: &T) -> &'a mut T {
             &mut *(reference as *const T as *mut T)
         }
 
-        let idx = self.len.fetch_add(1, ORDERING);
+        let col = std::hint::black_box(unsafe { into_mut(self) });
+        let idx = self.len.fetch_add(1, Ordering::Relaxed);
 
         loop {
-            let capacity = self.split.capacity();
+            let capacity = std::hint::black_box(col.capacity);
 
             match idx.cmp(&capacity) {
-                Ordering::Less => {
-                    let split = std::hint::black_box(unsafe { into_mut(&self.split) });
-                    if let Some(ptr) = unsafe { split.ptr_mut(idx) } {
-                        unsafe { *ptr = value };
-                        break;
-                    }
-                }
-                Ordering::Equal => {
-                    let split = unsafe { into_mut(&self.split) };
-                    let next_capacity = split.growth.new_fragment_capacity(split.fragments());
-                    let mut fragment = Vec::with_capacity(next_capacity).into();
-                    Self::set_len(&mut fragment);
-                    fragment[0] = value;
-                    let fragments = unsafe { split.fragments_mut() };
-                    fragments.push(fragment);
+                std::cmp::Ordering::Less => {
+                    let ptr =
+                        unsafe { col.pinned.get_ptr_mut(idx) }.expect("failed to push element");
+                    unsafe { *ptr = value };
                     break;
                 }
-                Ordering::Greater => {}
+                std::cmp::Ordering::Equal => {
+                    col.capacity >>= 2;
+                    let new_capacity = col
+                        .pinned
+                        .try_grow()
+                        .expect("failed to grow the collection");
+
+                    unsafe { col.pinned.set_len(new_capacity) };
+
+                    let ptr =
+                        unsafe { col.pinned.get_ptr_mut(idx) }.expect("failed to push element");
+                    unsafe { *ptr = value };
+
+                    col.capacity = new_capacity;
+
+                    break;
+                }
+                std::cmp::Ordering::Greater => {}
             }
         }
     }
@@ -478,35 +517,33 @@ impl<T, G: GrowthWithConstantTimeAccess> ConcurrentBag<T, G> {
     /// assert!(bag.is_empty());
     /// ```
     pub fn clear(&mut self) {
-        self.len.store(0, ORDERING);
-        self.split.clear();
+        self.pinned.clear();
+        self.len.store(0, Ordering::SeqCst);
+        self.capacity = self.pinned.capacity();
     }
 
     // helpers
-    fn set_len(fragment: &mut Fragment<T>) {
-        debug_assert_eq!(0, fragment.len());
-        let len = fragment.capacity();
-        unsafe { fragment.set_len(len) }
+    fn new_from_pinned(pinned: P) -> Self {
+        let len = pinned.len().into();
+        let capacity = pinned.capacity();
+        let mut bag = Self {
+            pinned,
+            len,
+            capacity,
+            phantom: Default::default(),
+        };
+        unsafe { bag.set_pinned_len_to_capacity() };
+        bag
     }
 
-    fn correct_split_lengths(split: &mut SplitVec<T, G>, len: usize) {
-        let mut remaining = len;
-
-        let fragments = unsafe { split.fragments_mut() };
-
-        for fragment in fragments {
-            let capacity = fragment.capacity();
-            if remaining <= capacity {
-                unsafe { fragment.set_len(remaining) };
-            } else {
-                unsafe { fragment.set_len(capacity) };
-                remaining -= capacity;
-            }
-        }
-
-        unsafe { split.set_len(len) };
+    unsafe fn set_pinned_len_to_capacity(&mut self) {
+        unsafe { self.pinned.set_len(self.pinned.capacity()) }
     }
 }
+
+unsafe impl<T, P: PinnedVec<T>> Sync for ConcurrentBag<T, P> {}
+
+unsafe impl<T, P: PinnedVec<T>> Send for ConcurrentBag<T, P> {}
 
 #[cfg(test)]
 mod tests {
@@ -514,7 +551,7 @@ mod tests {
 
     #[test]
     fn new_len_empty_clear() {
-        fn test<G: GrowthWithConstantTimeAccess>(bag: ConcurrentBag<char, G>) {
+        fn test<P: PinnedVec<char>>(bag: ConcurrentBag<char, P>) {
             let mut bag = bag;
 
             assert!(bag.is_empty());
@@ -540,8 +577,67 @@ mod tests {
         test(ConcurrentBag::new());
         test(ConcurrentBag::default());
         test(ConcurrentBag::with_doubling_growth());
+        test(ConcurrentBag::with_recursive_growth());
         test(ConcurrentBag::with_linear_growth(2));
         test(ConcurrentBag::with_linear_growth(4));
+        test(ConcurrentBag::with_fixed_capacity(64));
+    }
+
+    #[test]
+    fn capacity() {
+        let split: SplitVec<_, Doubling> = (0..4).collect();
+        let bag: ConcurrentBag<_, _> = split.into();
+        assert_eq!(bag.capacity(), 4);
+        bag.push(42);
+        assert_eq!(bag.capacity(), 12);
+
+        let split: SplitVec<_, Recursive> = (0..4).collect();
+        let bag: ConcurrentBag<_, _> = split.into();
+        assert_eq!(bag.capacity(), 4);
+        bag.push(42);
+        assert_eq!(bag.capacity(), 12);
+
+        let mut split: SplitVec<_, Linear> = SplitVec::with_linear_growth(2);
+        split.extend_from_slice(&[0, 1, 2, 3]);
+        let bag: ConcurrentBag<_, _> = split.into();
+        assert_eq!(bag.capacity(), 4);
+        bag.push(42);
+        assert_eq!(bag.capacity(), 8);
+
+        let mut fixed: FixedVec<_> = FixedVec::new(5);
+        fixed.extend_from_slice(&[0, 1, 2, 3]);
+        let bag: ConcurrentBag<_, _> = fixed.into();
+        assert_eq!(bag.capacity(), 5);
+        bag.push(42);
+        assert_eq!(bag.capacity(), 5);
+    }
+
+    #[test]
+    #[should_panic]
+    fn exceeding_fixed_capacity_panics() {
+        let mut fixed: FixedVec<_> = FixedVec::new(5);
+        fixed.extend_from_slice(&[0, 1, 2, 3]);
+        let bag: ConcurrentBag<_, _> = fixed.into();
+        assert_eq!(bag.capacity(), 5);
+        bag.push(42);
+        bag.push(7);
+    }
+
+    #[test]
+    #[should_panic]
+    fn exceeding_fixed_capacity_panics_concurrently() {
+        let bag = ConcurrentBag::with_fixed_capacity(10);
+        let bag_ref = &bag;
+        std::thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(move || {
+                    for _ in 0..3 {
+                        // in total there will be 4*3 = 12 pushes
+                        bag_ref.push(42);
+                    }
+                });
+            }
+        });
     }
 
     #[test]
@@ -552,11 +648,12 @@ mod tests {
         bag.push('b');
         bag.push('c');
         bag.push('d');
+        bag.push('e');
 
         let str = format!("{:?}", bag);
         assert_eq!(
             str,
-            "ConcurrentBag { split: SplitVec [\n    ['a', 'b', 'c', 'd']\n]\n, len: 4 }"
+            "ConcurrentBag { pinned: ['a', 'b', 'c', 'd', 'e'], len: 5, capacity: 12 }"
         );
     }
 
@@ -624,5 +721,30 @@ mod tests {
 
         let split = bag.into_inner();
         assert!(split.is_empty());
+    }
+
+    #[test]
+    fn ok_at_num_threads() {
+        use std::thread::available_parallelism;
+        let default_parallelism_approx = available_parallelism().expect("is-ok").get();
+        dbg!(default_parallelism_approx);
+
+        let num_threads = default_parallelism_approx;
+        let num_items_per_thread = 16384;
+
+        let bag = ConcurrentBag::new();
+        let bag_ref = &bag;
+        std::thread::scope(|s| {
+            for i in 0..num_threads {
+                s.spawn(move || {
+                    for j in 0..num_items_per_thread {
+                        bag_ref.push((i * 100000 + j) as i32);
+                    }
+                });
+            }
+        });
+
+        let pinned = bag.into_inner();
+        assert_eq!(pinned.len(), num_threads * num_items_per_thread);
     }
 }
