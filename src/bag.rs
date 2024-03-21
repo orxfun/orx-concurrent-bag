@@ -1,5 +1,6 @@
 use orx_fixed_vec::FixedVec;
 use orx_split_vec::{Doubling, Linear, PinnedVec, Recursive, SplitVec};
+use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -148,9 +149,9 @@ pub struct ConcurrentBag<T, P = SplitVec<T, Doubling>>
 where
     P: PinnedVec<T>,
 {
-    pinned: P,
+    pinned: UnsafeCell<P>,
     len: AtomicUsize,
-    capacity: usize,
+    capacity: AtomicUsize,
     phantom: PhantomData<T>,
 }
 
@@ -254,7 +255,7 @@ where
     /// let split = bag.into_inner();
     /// assert!(split.is_empty());
     pub fn into_inner(self) -> P {
-        let (len, mut pinned) = (self.len(), self.pinned);
+        let (len, mut pinned) = (self.len(), self.pinned.into_inner());
         unsafe { pinned.set_len(len) };
         pinned
     }
@@ -298,7 +299,7 @@ where
     /// ```
     #[inline(always)]
     pub fn capacity(&self) -> usize {
-        self.capacity
+        self.capacity.load(Ordering::Relaxed)
     }
 
     /// Returns whether the bag is empty or not.
@@ -356,7 +357,8 @@ where
     /// assert_eq!(iter.next(), None);
     /// ```
     pub unsafe fn iter(&self) -> impl Iterator<Item = &T> {
-        self.pinned.iter().take(self.len())
+        let pinned = &*self.pinned.get() as &P;
+        pinned.iter().take(self.len())
     }
 
     /// Concurrent & thread-safe method to push the given `value` to the back of the bag.
@@ -455,42 +457,32 @@ where
     /// * Note that `FixedVec` cannot grow beyond its fixed capacity;
     /// * `SplitVec`, on the other hand, can grow without dynamically.
     pub fn push(&self, value: T) {
-        #[allow(invalid_reference_casting)]
-        unsafe fn into_mut<'a, T>(reference: &T) -> &'a mut T {
-            &mut *(reference as *const T as *mut T)
-        }
-
-        let col = std::hint::black_box(unsafe { into_mut(self) });
         let idx = self.len.fetch_add(1, Ordering::Relaxed);
 
         loop {
-            let capacity = std::hint::black_box(col.capacity);
+            let capacity = self.capacity.load(Ordering::SeqCst);
 
             match idx.cmp(&capacity) {
                 std::cmp::Ordering::Less => {
-                    let ptr =
-                        unsafe { col.pinned.get_ptr_mut(idx) }.expect("failed to push element");
+                    // no need to grow, just push
+                    let pinned = unsafe { &mut *self.pinned.get() };
+                    let ptr = unsafe { pinned.get_ptr_mut(idx) }.expect("failed to push element");
                     unsafe { *ptr = value };
                     break;
                 }
                 std::cmp::Ordering::Equal => {
-                    col.capacity >>= 2;
-                    let new_capacity = col
-                        .pinned
-                        .try_grow()
-                        .expect("failed to grow the collection");
+                    // thread taking responsibility for growth
+                    let pinned = unsafe { &mut *self.pinned.get() };
+                    let new_capacity = pinned.try_grow().expect("failed to grow the collection");
 
-                    unsafe { col.pinned.set_len(new_capacity) };
+                    pinned.push(value);
+                    unsafe { pinned.set_len(new_capacity) };
 
-                    let ptr =
-                        unsafe { col.pinned.get_ptr_mut(idx) }.expect("failed to push element");
-                    unsafe { *ptr = value };
-
-                    col.capacity = new_capacity;
+                    self.capacity.store(new_capacity, Ordering::SeqCst);
 
                     break;
                 }
-                std::cmp::Ordering::Greater => {}
+                std::cmp::Ordering::Greater => { /* wait for thread responsible for growth */ }
             }
         }
     }
@@ -517,15 +509,19 @@ where
     /// assert!(bag.is_empty());
     /// ```
     pub fn clear(&mut self) {
-        self.pinned.clear();
+        let pinned = self.pinned.get_mut();
+        pinned.clear();
+        let capacity = pinned.capacity();
+
+        self.capacity.store(capacity, Ordering::SeqCst);
         self.len.store(0, Ordering::SeqCst);
-        self.capacity = self.pinned.capacity();
     }
 
     // helpers
     fn new_from_pinned(pinned: P) -> Self {
         let len = pinned.len().into();
-        let capacity = pinned.capacity();
+        let capacity = pinned.capacity().into();
+        let pinned = pinned.into();
         let mut bag = Self {
             pinned,
             len,
@@ -537,7 +533,8 @@ where
     }
 
     unsafe fn set_pinned_len_to_capacity(&mut self) {
-        unsafe { self.pinned.set_len(self.pinned.capacity()) }
+        let pinned = self.pinned.get_mut();
+        unsafe { pinned.set_len(pinned.capacity()) }
     }
 }
 

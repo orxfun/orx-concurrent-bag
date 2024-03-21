@@ -1,6 +1,6 @@
 [package]
 name = "orx-concurrent-bag"
-version = "1.3.1"
+version = "1.4.0"
 edition = "2021"
 authors = ["orxfun <orx.ugur.arikan@gmail.com>"]
 description = "An efficient, convenient and lightweight grow-only concurrent collection, ideal for collecting results concurrently."

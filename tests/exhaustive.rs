@@ -5,9 +5,9 @@ use orx_split_vec::SplitVec;
 use std::{sync::Arc, thread, time::Duration};
 use test_case::test_case;
 
-const NUM_RERUNS: usize = 4;
+const NUM_RERUNS: usize = 16;
 
-const EXHAUSTIVE_INPUTS: [(usize, usize); 9] = [
+const EXHAUSTIVE_INPUTS: [(usize, usize); 14] = [
     (1, 64),
     (1, 1024),
     (2, 32),
@@ -17,6 +17,11 @@ const EXHAUSTIVE_INPUTS: [(usize, usize); 9] = [
     (8, 4096),
     (8, 16384),
     (8, 65536),
+    (16, 1024),
+    (16, 4096),
+    (16, 16384),
+    (32, 1024),
+    (64, 1024),
 ];
 
 const FAST_INPUTS: [(usize, usize); 9] = [
@@ -134,7 +139,9 @@ fn assert_result<P: PinnedVec<i32>>(
 
     let expected = expected_result(num_threads, num_items_per_thread);
 
-    assert_eq!(vec_from_bag, expected);
+    assert_eq!(vec_from_bag.len(), expected.len());
+
+    assert!(vec_from_bag == expected);
 }
 
 fn sleep(do_sleep: bool, i: usize) {
