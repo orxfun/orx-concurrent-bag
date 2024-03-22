@@ -1,3 +1,4 @@
+use crate::errors::{ERR_FAILED_TO_GROW, ERR_FAILED_TO_PUSH};
 use orx_fixed_vec::FixedVec;
 use orx_split_vec::{Doubling, Linear, PinnedVec, Recursive, SplitVec};
 use std::cell::UnsafeCell;
@@ -357,6 +358,7 @@ where
     /// assert_eq!(iter.next(), None);
     /// ```
     pub unsafe fn iter(&self) -> impl Iterator<Item = &T> {
+        self.correct_pinned_len();
         let pinned = &*self.pinned.get() as &P;
         pinned.iter().take(self.len())
     }
@@ -457,7 +459,7 @@ where
     /// * Note that `FixedVec` cannot grow beyond its fixed capacity;
     /// * `SplitVec`, on the other hand, can grow without dynamically.
     pub fn push(&self, value: T) {
-        let idx = self.len.fetch_add(1, Ordering::Relaxed);
+        let idx = self.len.fetch_add(1, Ordering::Acquire);
 
         loop {
             let capacity = self.capacity.load(Ordering::SeqCst);
@@ -466,22 +468,26 @@ where
                 std::cmp::Ordering::Less => {
                     // no need to grow, just push
                     let pinned = unsafe { &mut *self.pinned.get() };
-                    let ptr = unsafe { pinned.get_ptr_mut(idx) }.expect("failed to push element");
+                    let ptr = unsafe { pinned.get_ptr_mut(idx) }.expect(ERR_FAILED_TO_PUSH);
                     unsafe { *ptr = value };
                     break;
                 }
                 std::cmp::Ordering::Equal => {
-                    // thread taking responsibility for growth
-                    let pinned = unsafe { &mut *self.pinned.get() };
-                    let new_capacity = pinned.try_grow().expect("failed to grow the collection");
+                    // we are responsible for growth
 
-                    pinned.push(value);
-                    unsafe { pinned.set_len(new_capacity) };
+                    let pinned = unsafe { &mut *self.pinned.get() };
+
+                    let new_capacity =
+                        unsafe { pinned.grow_to(capacity + 1) }.expect(ERR_FAILED_TO_GROW);
+
+                    let ptr = unsafe { pinned.get_ptr_mut(idx) }.expect(ERR_FAILED_TO_PUSH);
+                    unsafe { *ptr = value };
 
                     self.capacity.store(new_capacity, Ordering::SeqCst);
 
                     break;
                 }
+
                 std::cmp::Ordering::Greater => { /* wait for thread responsible for growth */ }
             }
         }
@@ -519,22 +525,17 @@ where
 
     // helpers
     fn new_from_pinned(pinned: P) -> Self {
-        let len = pinned.len().into();
-        let capacity = pinned.capacity().into();
-        let pinned = pinned.into();
-        let mut bag = Self {
-            pinned,
-            len,
-            capacity,
+        Self {
+            len: pinned.len().into(),
+            capacity: pinned.capacity().into(),
+            pinned: pinned.into(),
             phantom: Default::default(),
-        };
-        unsafe { bag.set_pinned_len_to_capacity() };
-        bag
+        }
     }
 
-    unsafe fn set_pinned_len_to_capacity(&mut self) {
-        let pinned = self.pinned.get_mut();
-        unsafe { pinned.set_len(pinned.capacity()) }
+    pub(crate) unsafe fn correct_pinned_len(&self) {
+        let pinned = unsafe { &mut *self.pinned.get() };
+        unsafe { pinned.set_len(self.len()) };
     }
 }
 

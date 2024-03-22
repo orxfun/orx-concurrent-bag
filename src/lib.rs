@@ -174,6 +174,7 @@
 
 mod bag;
 mod common_traits;
+mod errors;
 
 pub use bag::ConcurrentBag;
 pub use orx_fixed_vec::FixedVec;
