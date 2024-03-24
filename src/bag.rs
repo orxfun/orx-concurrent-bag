@@ -1,55 +1,20 @@
-use crate::errors::{ERR_FAILED_TO_GROW, ERR_FAILED_TO_PUSH};
+use crate::errors::{ERR_FAILED_TO_GROW, ERR_FAILED_TO_PUSH, ERR_REACHED_MAX_CAPACITY};
 use orx_fixed_vec::FixedVec;
-use orx_split_vec::{Doubling, Linear, PinnedVec, Recursive, SplitVec};
+use orx_pinned_vec::{PinnedVec, PinnedVecGrowthError};
+use orx_split_vec::{Doubling, Linear, SplitVec};
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// An efficient, convenient and lightweight grow-only concurrent collection, ideal for collecting results concurrently.
 ///
-/// The bag preserves the order of elements with respect to the order the `push` method is called.
+/// * **convenient**: `ConcurrentBag` can safely be shared among threads simply as a shared reference. Further, it is just a wrapper around any [`PinnedVec`](https://crates.io/crates/orx-pinned-vec) implementation adding concurrent safety guarantees. Therefore, underlying pinned vector and concurrent bag can be converted to each other back and forth without any cost.
+/// * **lightweight**: This crate takes a simplistic approach built on pinned vector guarantees which leads to concurrent programs with few dependencies and small binaries (see <a href="#section-approach-and-safety">approach and safety</a> for details).
+/// * **efficient**: `ConcurrentBag` is a lock free structure making use of a few atomic primitives. rayon is significantly faster when collecting small results under an extreme load (negligible work to compute results); however, `ConcurrentBag` starts to perform faster as result types get larger (see <a href="#section-benchmarks">benchmarks</a> for the experiments).
 ///
 /// # Examples
 ///
-/// Safety guarantees to push to the bag with an immutable reference makes it easy to share the bag among threads.
-///
-/// ## Using `std::sync::Arc`
-///
-/// We can share our bag among threads using `Arc` and collect results concurrently.
-///
-/// ```rust
-/// use orx_concurrent_bag::*;
-/// use std::{sync::Arc, thread};
-///
-/// let (num_threads, num_items_per_thread) = (4, 8);
-///
-/// let bag = Arc::new(ConcurrentBag::new());
-/// let mut thread_vec: Vec<thread::JoinHandle<()>> = Vec::new();
-///
-/// for i in 0..num_threads {
-///     let bag = bag.clone();
-///     thread_vec.push(thread::spawn(move || {
-///         for j in 0..num_items_per_thread {
-///             // concurrently collect results simply by calling `push`
-///             bag.push(i * 1000 + j);
-///         }
-///     }));
-/// }
-///
-/// for handle in thread_vec {
-///     handle.join().unwrap();
-/// }
-///
-/// let mut vec_from_bag: Vec<_> = unsafe { bag.iter() }.copied().collect();
-/// vec_from_bag.sort();
-/// let mut expected: Vec<_> = (0..num_threads).flat_map(|i| (0..num_items_per_thread).map(move |j| i * 1000 + j)).collect();
-/// expected.sort();
-/// assert_eq!(vec_from_bag, expected);
-/// ```
-///
-/// ## Using `std::thread::scope`
-///
-/// An even more convenient approach would be to use thread scopes. This allows to use shared reference of the bag across threads, instead of `Arc`.
+/// Safety guarantees to push to the bag with an immutable reference makes it easy to share the bag among threads. `std::sync::Arc` can be used; however, it is not required as demonstrated below.
 ///
 /// ```rust
 /// use orx_concurrent_bag::*;
@@ -57,7 +22,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// let (num_threads, num_items_per_thread) = (4, 8);
 ///
 /// let bag = ConcurrentBag::new();
-/// let bag_ref = &bag; // just take a reference
+/// let bag_ref = &bag; // just take a reference and share among threads
+///
 /// std::thread::scope(|s| {
 ///     for i in 0..num_threads {
 ///         s.spawn(move || {
@@ -76,28 +42,84 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// assert_eq!(vec_from_bag, expected);
 /// ```
 ///
-/// # Safety
+/// <div id="section-approach-and-safety"></div>
 ///
-/// `ConcurrentBag` uses a [`PinnedVec`](https://crates.io/crates/orx-pinned-vec) implementation as the underlying storage (see [`SplitVec`](https://crates.io/crates/orx-split-vec) and [`Fixed`](https://crates.io/crates/orx-fixed-vec)).
-/// `PinnedVec` guarantees that elements which are already pushed to the vector stay pinned to their memory locations unless explicitly changed due to removals, which is not the case here since `ConcurrentBag` is a grow-only collection.
-/// This feature makes it safe to grow with a shared reference on a single thread, as implemented by [`ImpVec`](https://crates.io/crates/orx-imp-vec).
+/// # Approach and Safety
 ///
-/// In order to achieve this feature in a concurrent program, `ConcurrentBag` pairs the `PinnedVec` with an `AtomicUsize`.
-/// * `len: AtomicSize`: fixes the target memory location of each element to be pushed at the time the `push` method is called. Regardless of whether or not writing to memory completes before another element is pushed, every pushed element receives a unique position reserved for it.
-/// * `PinnedVec` guarantees that already pushed elements are not moved around in memory during growth. This also enables the following mode of concurrency:
-///   * one thread might allocate new memory in order to grow when capacity is reached,
-///   * while another thread might concurrently be writing to any of the already allocation memory locations.
+/// `ConcurrentBag` aims to enable concurrent growth with a minimalistic approach. It requires two major components for this:
+/// * The underlying storage, which is any `PinnedVec` implementation. This means that memory locations of elements that are already pushed to the vector will never change, unless explicitly changed. This guarantee eliminates a certain set of safety concerns and corresponding complexity.
+/// * An atomic counter that is responsible for uniquely assigning one vector position to one and only one thread. `std::sync::atomic::AtomicUsize` and its `fetch_add` method are sufficient for this.
 ///
-/// The approach guarantees that
-/// * only one thread can write to the memory location of an element being pushed to the bag,
-/// * at any point in time, only one thread is responsible for the allocation of memory if the bag requires new memory,
-/// * no thread reads any of the written elements (reading happens after converting the bag `into_inner`),
-/// * hence, there exists no race condition.
+/// Simplicity and safety of the approach can be observed in the implementation of the `push` method.
+///
+/// ```rust ignore
+/// pub fn push(&self, value: T) -> usize {
+///     let idx = self.len.fetch_add(1, Ordering::AcqRel);
+///     self.assert_has_capacity_for(idx);
+///
+///     loop {
+///         let capacity = self.capacity.load(Ordering::Relaxed);
+///
+///         match idx.cmp(&capacity) {
+///             // no need to grow, just push
+///             std::cmp::Ordering::Less => {
+///                 self.write(idx, value);
+///                 break;
+///             }
+///
+///             // we are responsible for growth
+///             std::cmp::Ordering::Equal => {
+///                 let new_capacity = self.grow_to(capacity + 1);
+///                 self.write(idx, value);
+///                 self.capacity.store(new_capacity, Ordering::Relaxed);
+///                 break;
+///             }
+///
+///             // spin to wait for responsible thread to handle growth
+///             std::cmp::Ordering::Greater => {}
+///         }
+///     }
+///
+///     idx
+/// }
+/// ```
+///
+/// Below are some details about this implementation:
+/// * `fetch_add` guarantees that each pushed `value` receives a unique idx.
+/// * `assert_has_capacity_for` method is an additional safety guarantee added to pinned vectors to prevent any possible UB. It is not constraining for practical usage, see [`ConcurrentBag::maximum_capacity`] for details.
+/// * Inside the loop, we read the current `capacity` and compare it with `idx`:
+///   * `idx < capacity`:
+///     * The `idx`-th position is already allocated and belongs to the bag. We can simply write. Note that concurrent bag is write-only. Therefore, there is no other thread writing to or reading from this position; and hence, no race condition is present.
+///   * `idx > capacity`:
+///     * The `idx`-th position is not yet allocated. Underlying pinned vector needs to grow.
+///     * But another thread is responsible for the growth, we simply wait.
+///   * `idx == capacity`:
+///     * The `idx`-th position is not yet allocated. Underlying pinned vector needs to grow.
+///     * Further, we are responsible for the growth. Note that this guarantees that:
+///       * Only one thread will make the growth calls.
+///       * Only one growth call can take place at a given time.
+///       * There exists no race condition for the growth.
+///     * We first grow the pinned vector, then write to the `idx`-th position, and finally update the `capacity` to the new capacity.
+///
+/// ## How many times will we spin?
+///
+/// This is **deterministic**. It is exactly equal to the number of growth calls of the underlying pinned vector, and pinned vector implementations give a detailed control on this. For instance, assume that we will push a total of 15_000 elements concurrently to an empty bag.
+///
+/// * Further assume we use the default `SplitVec<_, Doubling>` as the underlying pinned vector. Throughout the execution, we will allocate fragments of capacities [4, 8, 16, ..., 4096, 8192] which will lead to a total capacity of 16_380. In other words, we might possibly visit the `std::cmp::Ordering::Greater => {}` block in 12 points in time during the entire execution.
+/// * If we use a `SplitVec<_, Linear>` with constant fragment lengths of 1_024, we will allocate 15 equal capacity fragments, which will lead to a total capacity of 15_360. So looping might only happen 15 times. We can drop this number to 8 if we set constant fragment capacity to 2_048; i.e., we can control the frequency of allocations.
+/// * If we use the strict `FixedVec<_>`, we have to pre-allocate a safe amount and can never grow beyond this number. Therefore, there will never be any spinning.
+///
+/// ## When we spin, how long do we spin?
+///
+/// Not long because:
+/// * Pinned vectors do not change memory locations of already pushed elements. In other words, growths are copy-free.
+/// * We are only waiting for allocation of memory required for the growth with respect to the chosen growth strategy.
 ///
 /// # Construction
 ///
-/// As explained above, `ConcurrentBag` is simply a tuple of a `PinnedVec` and an `AtomicUsize`.
-/// Therefore, it can be constructed by wrapping any pinned vector; i.e., `ConcurrentBag<T>` implements `From<P: PinnedVec<T>>`.
+/// `ConcurrentBag` can be constructed by wrapping any pinned vector; i.e., `ConcurrentBag<T>` implements `From<P: PinnedVec<T>>`.
+/// Likewise, a concurrent vector can be unwrapped without any cost to the underlying pinned vector with `into_inner` method.
+///
 /// Further, there exist `with_` methods to directly construct the concurrent bag with common pinned vector implementations.
 ///
 /// ```rust
@@ -112,16 +134,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// let bag: ConcurrentBag<char> = SplitVec::new().into();
 /// let bag: ConcurrentBag<char, SplitVec<char, Doubling>> = SplitVec::new().into();
 ///
-/// // SplitVec with [Recursive](https://docs.rs/orx-split-vec/latest/orx_split_vec/struct.Recursive.html) growth
-/// let bag: ConcurrentBag<char, SplitVec<char, Recursive>> =
-///     ConcurrentBag::with_recursive_growth();
-/// let bag: ConcurrentBag<char, SplitVec<char, Recursive>> =
-///     SplitVec::with_recursive_growth().into();
-///
 /// // SplitVec with [Linear](https://docs.rs/orx-split-vec/latest/orx_split_vec/struct.Linear.html) growth
 /// // each fragment will have capacity 2^10 = 1024
-/// let bag: ConcurrentBag<char, SplitVec<char, Linear>> = ConcurrentBag::with_linear_growth(10);
-/// let bag: ConcurrentBag<char, SplitVec<char, Linear>> = SplitVec::with_linear_growth(10).into();
+/// // and the split vector can grow up to 32 fragments
+/// let bag: ConcurrentBag<char, SplitVec<char, Linear>> = ConcurrentBag::with_linear_growth(10, 32);
+/// let bag: ConcurrentBag<char, SplitVec<char, Linear>> = SplitVec::with_linear_growth_and_fragments_capacity(10, 32).into();
 ///
 /// // [FixedVec](https://docs.rs/orx-fixed-vec/latest/orx_fixed_vec/) with fixed capacity.
 /// // Fixed vector cannot grow; hence, pushing the 1025-th element to this bag will cause a panic!
@@ -137,15 +154,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// let split_vec: SplitVec<i32> = (0..1024).collect();
 /// let bag: ConcurrentBag<_> = split_vec.into();
 /// ```
-///
-/// # Write-Only vs Read-Write
-///
-/// The concurrent bag is write-only & grow-only bag which is convenient and efficient for collecting elements.
-///
-/// See [`ConcurrentVec`](https://crates.io/crates/orx-concurrent-vec) for a read-and-write variant which
-/// * guarantees that reading and writing never happen concurrently, and hence,
-/// * allows safe iteration or access to already written elements of the concurrent vector,
-/// * with a minor additional cost of values being wrapped by an `Option`.
 pub struct ConcurrentBag<T, P = SplitVec<T, Doubling>>
 where
     P: PinnedVec<T>,
@@ -153,6 +161,7 @@ where
     pinned: UnsafeCell<P>,
     len: AtomicUsize,
     capacity: AtomicUsize,
+    maximum_capacity: UnsafeCell<usize>,
     phantom: PhantomData<T>,
 }
 
@@ -160,12 +169,12 @@ where
 impl<T> ConcurrentBag<T, SplitVec<T, Doubling>> {
     /// Creates a new concurrent vector by creating and wrapping up a new `SplitVec<T, Doubling>` as the underlying storage.
     pub fn with_doubling_growth() -> Self {
-        Self::new_from_pinned(SplitVec::with_doubling_growth())
+        Self::new_from_pinned(SplitVec::with_doubling_growth_and_fragments_capacity(32))
     }
 
     /// Creates a new concurrent vector by creating and wrapping up a new `SplitVec<T, Doubling>` as the underlying storage.
     pub fn new() -> Self {
-        Self::new_from_pinned(SplitVec::new())
+        Self::with_doubling_growth()
     }
 }
 
@@ -176,20 +185,40 @@ impl<T> Default for ConcurrentBag<T, SplitVec<T, Doubling>> {
     }
 }
 
-impl<T> ConcurrentBag<T, SplitVec<T, Recursive>> {
-    /// Creates a new concurrent vector by creating and wrapping up a new `SplitVec<T, Recursive>` as the underlying storage.
-    pub fn with_recursive_growth() -> Self {
-        Self::new_from_pinned(SplitVec::with_recursive_growth())
-    }
-}
-
 impl<T> ConcurrentBag<T, SplitVec<T, Linear>> {
     /// Creates a new concurrent vector by creating and wrapping up a new `SplitVec<T, Linear>` as the underlying storage.
     ///
-    /// Note that choosing a small `constant_fragment_capacity_exponent` for a large bag to be filled might lead to too many growth calls which might be computationally costly.
-    pub fn with_linear_growth(constant_fragment_capacity_exponent: usize) -> Self {
-        Self::new_from_pinned(SplitVec::with_linear_growth(
+    /// # Notes
+    ///
+    /// * `Linear` can be chosen over `Doubling` whenever memory efficiency is more critical since linear allocations lead to less waste.
+    /// * Choosing a small `constant_fragment_capacity_exponent` for a large bag to be filled might lead to too many growth calls.
+    /// * Furthermore, `Linear` growth strategy leads to a hard upper bound on the maximum capacity, please see the Safety section.
+    ///
+    /// # Safety
+    ///
+    /// `SplitVec<T, Linear>` can grow indefinitely (almost).
+    ///
+    /// However, `ConcurrentBag<T, SplitVec<T, Linear>>` has an upper bound on its capacity.
+    /// This capacity is computed as:
+    ///
+    /// ```rust ignore
+    /// 2usize.pow(constant_fragment_capacity_exponent) * fragments_capacity
+    /// ```
+    ///
+    /// For instance maximum capacity is 2^10 * 64 = 65536 when `constant_fragment_capacity_exponent=10` and `fragments_capacity=64`.
+    ///
+    /// Note that setting a relatively high and safe `fragments_capacity` is **not** costly, size of each element 2*usize.
+    ///
+    /// Pushing to the vector beyond this capacity leads to "out-of-capacity" error.
+    ///
+    /// This capacity can be accessed by [`ConcurrentBag::maximum_capacity`] method.
+    pub fn with_linear_growth(
+        constant_fragment_capacity_exponent: usize,
+        fragments_capacity: usize,
+    ) -> Self {
+        Self::new_from_pinned(SplitVec::with_linear_growth_and_fragments_capacity(
             constant_fragment_capacity_exponent,
+            fragments_capacity,
         ))
     }
 }
@@ -199,8 +228,11 @@ impl<T> ConcurrentBag<T, FixedVec<T>> {
     ///
     /// # Safety
     ///
-    /// Note that a `FixedVec` cannot grow.
-    /// Therefore, pushing the `(fixed_capacity + 1)`-th element to the bag will lead to a panic.
+    /// Note that a `FixedVec` cannot grow; i.e., it has a hard upper bound on the number of elements it can hold, which is the `fixed_capacity`.
+    ///
+    /// Pushing to the vector beyond this capacity leads to "out-of-capacity" error.
+    ///
+    /// This capacity can be accessed by [`ConcurrentBag::maximum_capacity`] method.
     pub fn with_fixed_capacity(fixed_capacity: usize) -> Self {
         Self::new_from_pinned(FixedVec::new(fixed_capacity))
     }
@@ -303,6 +335,155 @@ where
         self.capacity.load(Ordering::Relaxed)
     }
 
+    /// Note that a `ConcurrentBag` contains two capacity methods:
+    /// * `capacity`: returns current capacity of the underlying pinned vector; this capacity can grow concurrently with a `&self` reference; i.e., during a `push` call
+    /// * `maximum_capacity`: returns the maximum potential capacity that the pinned vector can grow up to with a `&self` reference;
+    ///   * `push`ing a new element while the bag is at `maximum_capacity` leads to panic.
+    ///
+    /// On the other hand, maximum capacity can safely be increased by a mutually exclusive `&mut self` reference using the `reserve_maximum_capacity`.
+    /// However, underlying pinned vector must be able to provide pinned-element guarantees during this operation.
+    ///
+    /// Among the common pinned vector implementations:
+    /// * `SplitVec<_, Doubling>`: supports this method; however, it does not require for any practical size.
+    /// * `SplitVec<_, Linear>`: is guaranteed to succeed and increase its maximum capacity to the required value.
+    /// * `FixedVec<_>`: is the most strict pinned vector which cannot grow even in a single-threaded setting. Currently, it will always return an error to this call.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use orx_concurrent_bag::*;
+    /// use orx_pinned_vec::PinnedVecGrowthError;
+    ///
+    ///  // SplitVec<_, Doubling> (default)
+    /// let bag: ConcurrentBag<char> = ConcurrentBag::new();
+    /// assert_eq!(bag.capacity(), 4); // only allocates the first fragment of 4
+    /// assert_eq!(bag.maximum_capacity(), 17_179_869_180); // it can grow safely & exponentially
+    ///
+    /// let bag: ConcurrentBag<char, _> = ConcurrentBag::with_doubling_growth();
+    /// assert_eq!(bag.capacity(), 4);
+    /// assert_eq!(bag.maximum_capacity(), 17_179_869_180);
+    ///
+    /// // SplitVec<_, Linear>
+    /// let mut bag: ConcurrentBag<char, _> = ConcurrentBag::with_linear_growth(10, 20);
+    /// assert_eq!(bag.capacity(), 2usize.pow(10)); // only allocates first fragment of 1024
+    /// assert_eq!(bag.maximum_capacity(), 2usize.pow(10) * 20); // it can concurrently allocate 19 more
+    ///
+    /// // SplitVec<_, Linear> -> reserve_maximum_capacity
+    /// let result = bag.reserve_maximum_capacity(2usize.pow(10) * 30);
+    /// assert_eq!(result, Ok(2usize.pow(10) * 30));
+    ///
+    /// // actually no new allocation yet; precisely additional memory for 10 pairs of pointers is used
+    /// assert_eq!(bag.capacity(), 2usize.pow(10)); // still only the first fragment capacity
+    ///
+    /// dbg!(bag.maximum_capacity(), 2usize.pow(10) * 30);
+    /// assert_eq!(bag.maximum_capacity(), 2usize.pow(10) * 30); // now it can safely reach 2^10 * 30
+    ///
+    /// // FixedVec<_>: pre-allocated, exact and strict
+    /// let mut bag: ConcurrentBag<char, _> = ConcurrentBag::with_fixed_capacity(42);
+    /// assert_eq!(bag.capacity(), 42);
+    /// assert_eq!(bag.maximum_capacity(), 42);
+    ///
+    /// let result = bag.reserve_maximum_capacity(43);
+    /// assert_eq!(
+    ///     result,
+    ///     Err(PinnedVecGrowthError::FailedToGrowWhileKeepingElementsPinned)
+    /// );
+    /// ```
+    pub fn reserve_maximum_capacity(
+        &mut self,
+        maximum_capacity: usize,
+    ) -> Result<usize, PinnedVecGrowthError> {
+        let result = self.try_grow_to(maximum_capacity);
+        if let Ok(new_capacity) = result {
+            let maximum_capacity = unsafe { &mut *self.maximum_capacity.get() };
+            *maximum_capacity = new_capacity;
+        }
+        result
+    }
+
+    /// Returns the maximum possible capacity that the concurrent bag can reach.
+    /// This is equivalent to the maximum capacity that the underlying pinned vector can safely reach in a concurrent program.
+    ///
+    /// Note that `maximum_capacity` differs from `capacity` due to the following:
+    /// * `capacity` represents currently allocated memory owned by the underlying pinned vector.
+    /// The bag can possibly grow beyond this value.
+    /// * `maximum_capacity` represents the hard upper limit on the length of the concurrent bag.
+    /// Attempting to grow the bag beyond this value leads to an error.
+    /// Note that this is not necessarily a limitation for the underlying split vector; the limitation might be due to the additional safety requirements of concurrent programs.
+    ///
+    /// # Safety
+    ///
+    /// Calling `push` while the bag is at its `maximum_capacity` leads to a panic.    
+    /// This condition is a safety requirement.
+    /// Underlying pinned vector cannot safely grow beyond maximum capacity in a possibly concurrent call (with `&self`).
+    /// This would lead to UB.
+    ///
+    /// It is easy to overcome this problem during construction:
+    /// * It is not observed with the default pinned vector `SplitVec<_, Doubling>`:
+    ///   * `ConcurrentBag::new()`
+    ///   * `ConcurrentBag::with_doubling_growth()`
+    /// * It can be avoided cheaply when `SplitVec<_, Linear>` is used by setting the second argument to a proper value:
+    ///   * `ConcurrentBag::with_linear_growth(10, 32)`
+    ///     * Each fragment of this vector will have a capacity of 2^10 = 1024.
+    ///     * It can safely grow up to 32 fragments with `&self` reference.
+    ///     * Therefore, it is safe to concurrently grow this vector to 32 * 1024 elements.
+    ///     * Cost of replacing 32 with 64 is negligible in such a scenario (the difference in memory allocation is precisely 32 * 2*usize).
+    /// * Using the variant `FixedVec<_>` requires a hard bound and pre-allocation regardless the program is concurrent or not.
+    ///   * `ConcurrentBag::with_fixed_capacity(1024)`
+    ///     * Unlike the split vector variants, this variant pre-allocates for 1024 elements.
+    ///     * And can never grow beyond this value.
+    ///
+    /// Alternatively, caller can try to safely reserve the required capacity any time by a mutually exclusive reference:
+    /// * `ConcurrentBag.reserve_maximum_capacity(&mut self, maximum_capacity: usize)`
+    ///   * this call will always succeed with `SplitVec<_, Doubling>` and `SplitVec<_, Linear>`,
+    ///   * will always fail for `FixedVec<_>`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use orx_concurrent_bag::*;
+    /// use orx_pinned_vec::PinnedVecGrowthError;
+    ///
+    ///  // SplitVec<_, Doubling> (default)
+    /// let bag: ConcurrentBag<char> = ConcurrentBag::new();
+    /// assert_eq!(bag.capacity(), 4); // only allocates the first fragment of 4
+    /// assert_eq!(bag.maximum_capacity(), 17_179_869_180); // it can grow safely & exponentially
+    ///
+    /// let bag: ConcurrentBag<char, _> = ConcurrentBag::with_doubling_growth();
+    /// assert_eq!(bag.capacity(), 4);
+    /// assert_eq!(bag.maximum_capacity(), 17_179_869_180);
+    ///
+    /// // SplitVec<_, Linear>
+    /// let mut bag: ConcurrentBag<char, _> = ConcurrentBag::with_linear_growth(10, 20);
+    /// assert_eq!(bag.capacity(), 2usize.pow(10)); // only allocates first fragment of 1024
+    /// assert_eq!(bag.maximum_capacity(), 2usize.pow(10) * 20); // it can concurrently allocate 19 more
+    ///
+    /// // SplitVec<_, Linear> -> reserve_maximum_capacity
+    /// let result = bag.reserve_maximum_capacity(2usize.pow(10) * 30);
+    /// assert_eq!(result, Ok(2usize.pow(10) * 30));
+    ///
+    /// // actually no new allocation yet; precisely additional memory for 10 pairs of pointers is used
+    /// assert_eq!(bag.capacity(), 2usize.pow(10)); // still only the first fragment capacity
+    ///
+    /// dbg!(bag.maximum_capacity(), 2usize.pow(10) * 30);
+    /// assert_eq!(bag.maximum_capacity(), 2usize.pow(10) * 30); // now it can safely reach 2^10 * 30
+    ///
+    /// // FixedVec<_>: pre-allocated, exact and strict
+    /// let mut bag: ConcurrentBag<char, _> = ConcurrentBag::with_fixed_capacity(42);
+    /// assert_eq!(bag.capacity(), 42);
+    /// assert_eq!(bag.maximum_capacity(), 42);
+    ///
+    /// let result = bag.reserve_maximum_capacity(43);
+    /// assert_eq!(
+    ///     result,
+    ///     Err(PinnedVecGrowthError::FailedToGrowWhileKeepingElementsPinned)
+    /// );
+    /// ```
+    #[inline]
+    pub fn maximum_capacity(&self) -> usize {
+        unsafe { *self.maximum_capacity.get() }
+    }
+
     /// Returns whether the bag is empty or not.
     ///
     /// # Examples
@@ -363,17 +544,53 @@ where
         pinned.iter().take(self.len())
     }
 
-    /// Concurrent & thread-safe method to push the given `value` to the back of the bag.
+    /// Concurrent, thread-safe method to push the given `value` to the back of the bag,
+    /// and returns the position or index of the pushed value.
     ///
     /// It preserves the order of elements with respect to the order the `push` method is called.
     ///
+    /// # Panics
+    ///
+    /// Panics if the concurrent bag is already at its maximum capacity; i.e., if `self.len() == self.maximum_capacity()`.
+    ///
+    /// Note that this is an important safety assertion in the concurrent context; however, not a practical limitation.
+    /// Please see the [`ConcurrentBag::maximum_capacity`] for details.
+    ///
     /// # Examples
     ///
-    /// Allowing to safely push to the bag with an immutable reference, it is trivial to share the bag among threads.
+    /// ## Using `std::thread::scope`
+    ///
+    /// We can directly take a shared reference of the bag and share it among threads.
+    ///
+    /// ```rust
+    /// use orx_concurrent_bag::*;
+    /// use std::thread;
+    ///
+    /// let (num_threads, num_items_per_thread) = (4, 8);
+    ///
+    /// let bag = ConcurrentBag::new();
+    /// let bag_ref = &bag; // just take a reference and share among threads
+    /// std::thread::scope(|s| {
+    ///     for i in 0..num_threads {
+    ///         s.spawn(move || {
+    ///             for j in 0..num_items_per_thread {
+    ///                 // concurrently collect results simply by calling `push`
+    ///                 bag_ref.push(i * 1000 + j);
+    ///             }
+    ///         });
+    ///     }
+    /// });
+    ///
+    /// let mut vec_from_bag: Vec<_> = bag.into_inner().iter().copied().collect();
+    /// vec_from_bag.sort();
+    /// let mut expected: Vec<_> = (0..num_threads).flat_map(|i| (0..num_items_per_thread).map(move |j| i * 1000 + j)).collect();
+    /// expected.sort();
+    /// assert_eq!(vec_from_bag, expected);
+    /// ```
     ///
     /// ## Using `std::sync::Arc`
     ///
-    /// We can share our bag among threads using `Arc` and collect results concurrently.
+    /// Alternatively, we can share our bag among threads using `Arc` and collect results concurrently.
     ///
     /// ```rust
     /// use orx_concurrent_bag::*;
@@ -404,93 +621,34 @@ where
     /// expected.sort();
     /// assert_eq!(vec_from_bag, expected);
     /// ```
-    ///
-    /// ## Using `std::thread::scope`
-    ///
-    /// An even more convenient approach would be to use thread scopes. This allows to use shared reference of the bag across threads, instead of `Arc`.
-    ///
-    /// ```rust
-    /// use orx_concurrent_bag::*;
-    /// use std::thread;
-    ///
-    /// let (num_threads, num_items_per_thread) = (4, 8);
-    ///
-    /// let bag = ConcurrentBag::new();
-    /// let bag_ref = &bag; // just take a reference
-    /// std::thread::scope(|s| {
-    ///     for i in 0..num_threads {
-    ///         s.spawn(move || {
-    ///             for j in 0..num_items_per_thread {
-    ///                 // concurrently collect results simply by calling `push`
-    ///                 bag_ref.push(i * 1000 + j);
-    ///             }
-    ///         });
-    ///     }
-    /// });
-    ///
-    /// let mut vec_from_bag: Vec<_> = bag.into_inner().iter().copied().collect();
-    /// vec_from_bag.sort();
-    /// let mut expected: Vec<_> = (0..num_threads).flat_map(|i| (0..num_items_per_thread).map(move |j| i * 1000 + j)).collect();
-    /// expected.sort();
-    /// assert_eq!(vec_from_bag, expected);
-    /// ```
-    ///
-    /// # Safety
-    ///
-    /// `ConcurrentBag` uses a [`PinnedVec`](https://crates.io/crates/orx-pinned-vec) implementation as the underlying storage (see [`SplitVec`](https://crates.io/crates/orx-split-vec) and [`Fixed`](https://crates.io/crates/orx-fixed-vec)).
-    /// `PinnedVec` guarantees that elements which are already pushed to the vector stay pinned to their memory locations unless explicitly changed due to removals, which is not the case here since `ConcurrentBag` is a grow-only collection.
-    /// This feature makes it safe to grow with a shared reference on a single thread, as implemented by [`ImpVec`](https://crates.io/crates/orx-imp-vec).
-    ///
-    /// In order to achieve this feature in a concurrent program, `ConcurrentBag` pairs the `PinnedVec` with an `AtomicUsize`.
-    /// * `len: AtomicSize`: fixes the target memory location of each element to be pushed at the time the `push` method is called. Regardless of whether or not writing to memory completes before another element is pushed, every pushed element receives a unique position reserved for it.
-    /// * `PinnedVec` guarantees that already pushed elements are not moved around in memory during growth. This also enables the following mode of concurrency:
-    ///   * one thread might allocate new memory in order to grow when capacity is reached,
-    ///   * while another thread might concurrently be writing to any of the already allocation memory locations.
-    ///
-    /// The approach guarantees that
-    /// * only one thread can write to the memory location of an element being pushed to the bag,
-    /// * at any point in time, only one thread is responsible for the allocation of memory if the bag requires new memory,
-    /// * no thread reads any of the written elements (reading happens after converting the bag `into_inner`),
-    /// * hence, there exists no race condition.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the underlying pinned vector fails to grow.
-    /// * Note that `FixedVec` cannot grow beyond its fixed capacity;
-    /// * `SplitVec`, on the other hand, can grow without dynamically.
-    pub fn push(&self, value: T) {
-        let idx = self.len.fetch_add(1, Ordering::Acquire);
+    pub fn push(&self, value: T) -> usize {
+        let idx = self.len.fetch_add(1, Ordering::AcqRel);
+        self.assert_has_capacity_for(idx);
 
         loop {
-            let capacity = self.capacity.load(Ordering::SeqCst);
+            let capacity = self.capacity.load(Ordering::Relaxed);
 
             match idx.cmp(&capacity) {
+                // no need to grow, just push
                 std::cmp::Ordering::Less => {
-                    // no need to grow, just push
-                    let pinned = unsafe { &mut *self.pinned.get() };
-                    let ptr = unsafe { pinned.get_ptr_mut(idx) }.expect(ERR_FAILED_TO_PUSH);
-                    unsafe { *ptr = value };
+                    self.write(idx, value);
                     break;
                 }
+
+                // we are responsible for growth
                 std::cmp::Ordering::Equal => {
-                    // we are responsible for growth
-
-                    let pinned = unsafe { &mut *self.pinned.get() };
-
-                    let new_capacity =
-                        unsafe { pinned.grow_to(capacity + 1) }.expect(ERR_FAILED_TO_GROW);
-
-                    let ptr = unsafe { pinned.get_ptr_mut(idx) }.expect(ERR_FAILED_TO_PUSH);
-                    unsafe { *ptr = value };
-
-                    self.capacity.store(new_capacity, Ordering::SeqCst);
-
+                    let new_capacity = self.grow_to(capacity + 1);
+                    self.write(idx, value);
+                    self.capacity.store(new_capacity, Ordering::Relaxed);
                     break;
                 }
 
-                std::cmp::Ordering::Greater => { /* wait for thread responsible for growth */ }
+                // spin to wait for responsible thread to handle growth
+                std::cmp::Ordering::Greater => {}
             }
         }
+
+        idx
     }
 
     /// Clears the bag removing all already pushed elements.
@@ -524,10 +682,65 @@ where
     }
 
     // helpers
+    /// Asserts that `idx < self.maximum_capacity()`.
+    ///
+    /// # Safety
+    ///
+    /// This condition is a safety requirement.
+    /// Underlying pinned vector cannot safely grow beyond maximum capacity in a possibly concurrent call (`&self`).
+    /// This would lead to UB.
+    ///
+    /// It is easy to overcome this problem during construction:
+    /// * It is not observed with the default pinned vector `SplitVec<_, Doubling>`:
+    ///   * `ConcurrentBag::new()`
+    ///   * `ConcurrentBag::with_doubling_growth()`
+    /// * It can be avoided cheaply when `SplitVec<_, Linear>` is used by setting the second argument to a proper value:
+    ///   * `ConcurrentBag::with_linear_growth(10, 32)`
+    ///     * Each fragment of this vector will have a capacity of 2^10 = 1024.
+    ///     * It can safely grow up to 32 fragments with `&self` reference.
+    ///     * Therefore, it is safe to concurrently grow this vector to 32 * 1024 elements.
+    ///     * Cost of replacing 32 with 64 is negligible in such a scenario (the difference in memory allocation is precisely 32 * 2*usize).
+    /// * Using the variant `FixedVec<_>` requires a hard bound and pre-allocation regardless the program is concurrent or not.
+    ///   * `ConcurrentBag::with_fixed_capacity(1024)`
+    ///     * Unlike the split vector variants, this variant pre-allocates for 1024 elements.
+    ///     * And can never grow beyond this value.
+    ///
+    /// Alternatively, caller can try to safely reserve the required capacity any time by a mutually exclusive reference:
+    /// * `ConcurrentBag.reserve_maximum_capacity(&mut self, maximum_capacity: usize)`
+    ///   * this call will always succeed with `SplitVec<_, Doubling>` and `SplitVec<_, Linear>`,
+    ///   * will always fail for `FixedVec<_>`.
+    #[inline]
+    fn assert_has_capacity_for(&self, idx: usize) {
+        assert!(
+            idx < self.maximum_capacity(),
+            "{}",
+            ERR_REACHED_MAX_CAPACITY
+        );
+    }
+
+    #[inline]
+    fn try_grow_to(&self, new_capacity: usize) -> Result<usize, PinnedVecGrowthError> {
+        let pinned = unsafe { &mut *self.pinned.get() };
+        unsafe { pinned.grow_to(new_capacity) }
+    }
+
+    #[inline]
+    fn grow_to(&self, new_capacity: usize) -> usize {
+        self.try_grow_to(new_capacity).expect(ERR_FAILED_TO_GROW)
+    }
+
+    #[inline]
+    fn write(&self, idx: usize, value: T) {
+        let pinned = unsafe { &mut *self.pinned.get() };
+        let ptr = unsafe { pinned.get_ptr_mut(idx) }.expect(ERR_FAILED_TO_PUSH);
+        unsafe { *ptr = value };
+    }
+
     fn new_from_pinned(pinned: P) -> Self {
         Self {
             len: pinned.len().into(),
             capacity: pinned.capacity().into(),
+            maximum_capacity: pinned.capacity_state().maximum_concurrent_capacity().into(),
             pinned: pinned.into(),
             phantom: Default::default(),
         }
@@ -545,7 +758,13 @@ unsafe impl<T, P: PinnedVec<T>> Send for ConcurrentBag<T, P> {}
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::HashSet,
+        sync::{Arc, Mutex},
+    };
+
     use super::*;
+    use orx_split_vec::Recursive;
 
     #[test]
     fn new_len_empty_clear() {
@@ -575,21 +794,22 @@ mod tests {
         test(ConcurrentBag::new());
         test(ConcurrentBag::default());
         test(ConcurrentBag::with_doubling_growth());
-        test(ConcurrentBag::with_recursive_growth());
-        test(ConcurrentBag::with_linear_growth(2));
-        test(ConcurrentBag::with_linear_growth(4));
+        test(ConcurrentBag::with_linear_growth(2, 8));
+        test(ConcurrentBag::with_linear_growth(4, 8));
         test(ConcurrentBag::with_fixed_capacity(64));
     }
 
     #[test]
     fn capacity() {
-        let split: SplitVec<_, Doubling> = (0..4).collect();
+        let mut split: SplitVec<_, Doubling> = (0..4).collect();
+        split.concurrent_reserve(5);
         let bag: ConcurrentBag<_, _> = split.into();
         assert_eq!(bag.capacity(), 4);
         bag.push(42);
         assert_eq!(bag.capacity(), 12);
 
-        let split: SplitVec<_, Recursive> = (0..4).collect();
+        let mut split: SplitVec<_, Recursive> = (0..4).collect();
+        split.concurrent_reserve(5);
         let bag: ConcurrentBag<_, _> = split.into();
         assert_eq!(bag.capacity(), 4);
         bag.push(42);
@@ -597,6 +817,7 @@ mod tests {
 
         let mut split: SplitVec<_, Linear> = SplitVec::with_linear_growth(2);
         split.extend_from_slice(&[0, 1, 2, 3]);
+        split.concurrent_reserve(5);
         let bag: ConcurrentBag<_, _> = split.into();
         assert_eq!(bag.capacity(), 4);
         bag.push(42);
@@ -744,5 +965,69 @@ mod tests {
 
         let pinned = bag.into_inner();
         assert_eq!(pinned.len(), num_threads * num_items_per_thread);
+    }
+
+    #[test]
+    fn push_indices() {
+        let indices_set = Arc::new(Mutex::new(HashSet::new()));
+
+        let bag = ConcurrentBag::new();
+        let bag_ref = &bag;
+        std::thread::scope(|s| {
+            for i in 0..4 {
+                let indices_set = indices_set.clone();
+                s.spawn(move || {
+                    for j in 0..16 {
+                        let idx = bag_ref.push(i * 100000 + j);
+                        let mut set = indices_set.lock().expect("is ok");
+                        set.insert(idx);
+                    }
+                });
+            }
+        });
+
+        let set = indices_set.lock().expect("is ok");
+        assert_eq!(set.len(), 4 * 16);
+        for i in 0..(4 * 16) {
+            assert!(set.contains(&i));
+        }
+    }
+
+    #[test]
+    fn reserve_maximum_capacity() {
+        // SplitVec<_, Doubling>
+        let bag: ConcurrentBag<char> = ConcurrentBag::new();
+        assert_eq!(bag.capacity(), 4); // only allocates the first fragment of 4
+        assert_eq!(bag.maximum_capacity(), 17_179_869_180); // it can grow safely & exponentially
+
+        let bag: ConcurrentBag<char, _> = ConcurrentBag::with_doubling_growth();
+        assert_eq!(bag.capacity(), 4);
+        assert_eq!(bag.maximum_capacity(), 17_179_869_180);
+
+        // SplitVec<_, Linear>
+        let mut bag: ConcurrentBag<char, _> = ConcurrentBag::with_linear_growth(10, 20);
+        assert_eq!(bag.capacity(), 2usize.pow(10)); // only allocates first fragment of 1024
+        assert_eq!(bag.maximum_capacity(), 2usize.pow(10) * 20); // it can concurrently allocate 19 more
+
+        // SplitVec<_, Linear> -> reserve_maximum_capacity
+        let result = bag.reserve_maximum_capacity(2usize.pow(10) * 30);
+        assert_eq!(result, Ok(2usize.pow(10) * 30));
+
+        // actually no new allocation yet; precisely additional memory for 10 pairs of pointers is used
+        assert_eq!(bag.capacity(), 2usize.pow(10)); // first fragment capacity
+
+        dbg!(bag.maximum_capacity(), 2usize.pow(10) * 30);
+        assert_eq!(bag.maximum_capacity(), 2usize.pow(10) * 30); // now it can safely reach 2^10 * 30
+
+        // FixedVec<_>: pre-allocated, exact and strict
+        let mut bag: ConcurrentBag<char, _> = ConcurrentBag::with_fixed_capacity(42);
+        assert_eq!(bag.capacity(), 42);
+        assert_eq!(bag.maximum_capacity(), 42);
+
+        let result = bag.reserve_maximum_capacity(43);
+        assert_eq!(
+            result,
+            Err(PinnedVecGrowthError::FailedToGrowWhileKeepingElementsPinned)
+        );
     }
 }
