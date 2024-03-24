@@ -48,7 +48,7 @@ fn with_arc<T: 'static, P: PinnedVec<T> + 'static>(
         thread_vec.push(thread::spawn(move || {
             sleep(do_sleep, i);
             for j in 0..num_items_per_thread {
-                bag.push(compute(i, j));
+                bag.push(std::hint::black_box(compute(i, j)));
             }
         }));
     }
@@ -73,7 +73,7 @@ fn with_scope<T, P: PinnedVec<T>>(
             s.spawn(move || {
                 sleep(do_sleep, i);
                 for j in 0..num_items_per_thread {
-                    bag_ref.push(compute(i, j));
+                    bag_ref.push(std::hint::black_box(compute(i, j)));
                 }
             });
         }
@@ -95,7 +95,7 @@ fn with_rayon<T: Send + Sync + Clone + Copy>(
         .flat_map(|i| {
             sleep(do_sleep, i);
             (0..num_items_per_thread)
-                .map(move |j| compute(i, j))
+                .map(move |j| std::hint::black_box(compute(i, j)))
                 .collect::<Vec<_>>()
         })
         .collect();
@@ -133,6 +133,8 @@ fn bench_grow(c: &mut Criterion) {
             add_workload, num_threads, num_items_per_thread
         );
 
+        let max_len = num_threads * num_items_per_thread;
+
         // RAYON
 
         group.bench_with_input(BenchmarkId::new("with_rayon", &treatment), &(), |b, _| {
@@ -164,6 +166,8 @@ fn bench_grow(c: &mut Criterion) {
             },
         );
 
+        let fragment_size = 2usize.pow(12);
+        let num_linear_fragments = (max_len / fragment_size) + 1;
         group.bench_with_input(
             BenchmarkId::new("with_arc(Linear(12))", &treatment),
             &(),
@@ -174,14 +178,14 @@ fn bench_grow(c: &mut Criterion) {
                         black_box(num_items_per_thread),
                         add_workload,
                         compute_large_data,
-                        ConcurrentBag::with_linear_growth(12),
+                        ConcurrentBag::with_linear_growth(12, num_linear_fragments),
                     ))
                 })
             },
         );
 
         group.bench_with_input(
-            BenchmarkId::new("with_arc(Fixed(1_048_576))", &treatment),
+            BenchmarkId::new("with_arc(Fixed)", &treatment),
             &(),
             |b, _| {
                 b.iter(|| {
@@ -190,7 +194,7 @@ fn bench_grow(c: &mut Criterion) {
                         black_box(num_items_per_thread),
                         add_workload,
                         compute_large_data,
-                        ConcurrentBag::with_fixed_capacity(1_048_576),
+                        ConcurrentBag::with_fixed_capacity(max_len),
                     ))
                 })
             },
@@ -224,7 +228,7 @@ fn bench_grow(c: &mut Criterion) {
                         black_box(num_items_per_thread),
                         add_workload,
                         compute_large_data,
-                        ConcurrentBag::with_linear_growth(12),
+                        ConcurrentBag::with_linear_growth(12, num_linear_fragments),
                     ))
                 })
             },

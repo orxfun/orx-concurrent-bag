@@ -5,7 +5,7 @@ use orx_split_vec::SplitVec;
 use std::{sync::Arc, thread, time::Duration};
 use test_case::test_case;
 
-const NUM_RERUNS: usize = 16;
+const NUM_RERUNS: usize = 64;
 
 const EXHAUSTIVE_INPUTS: [(usize, usize); 14] = [
     (1, 64),
@@ -99,23 +99,21 @@ fn run_test<P: PinnedVec<i32> + Clone + 'static>(pinned: P, inputs: &[(usize, us
 }
 
 #[test_case(FixedVec::new(524288))]
-#[test_case(SplitVec::new())]
-#[test_case(SplitVec::with_doubling_growth())]
-#[test_case(SplitVec::with_recursive_growth())]
-#[test_case(SplitVec::with_linear_growth(6))]
-#[test_case(SplitVec::with_linear_growth(10))]
-#[test_case(SplitVec::with_linear_growth(14))]
+#[test_case(SplitVec::with_doubling_growth_and_fragments_capacity(32))]
+#[test_case(SplitVec::with_recursive_growth_and_fragments_capacity(32))]
+#[test_case(SplitVec::with_linear_growth_and_fragments_capacity(6, 8192))]
+#[test_case(SplitVec::with_linear_growth_and_fragments_capacity(10, 512))]
+#[test_case(SplitVec::with_linear_growth_and_fragments_capacity(14, 32))]
 fn exhaustive<P: PinnedVec<i32> + Clone + 'static>(pinned: P) {
     run_test(pinned, &EXHAUSTIVE_INPUTS)
 }
 
 #[test_case(FixedVec::new(3000))]
-#[test_case(SplitVec::new())]
-#[test_case(SplitVec::with_doubling_growth())]
-#[test_case(SplitVec::with_recursive_growth())]
-#[test_case(SplitVec::with_linear_growth(6))]
-#[test_case(SplitVec::with_linear_growth(10))]
-#[test_case(SplitVec::with_linear_growth(14))]
+#[test_case(SplitVec::with_doubling_growth_and_fragments_capacity(32))]
+#[test_case(SplitVec::with_recursive_growth_and_fragments_capacity(32))]
+#[test_case(SplitVec::with_linear_growth_and_fragments_capacity(6, 40))]
+#[test_case(SplitVec::with_linear_growth_and_fragments_capacity(10, 10))]
+#[test_case(SplitVec::with_linear_growth_and_fragments_capacity(14, 10))]
 fn fast<P: PinnedVec<i32> + Clone + 'static>(pinned: P) {
     run_test(pinned, &FAST_INPUTS)
 }
