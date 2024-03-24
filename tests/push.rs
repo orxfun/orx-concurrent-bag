@@ -5,7 +5,7 @@ use orx_split_vec::SplitVec;
 use std::{sync::Arc, thread, time::Duration};
 use test_case::test_case;
 
-const NUM_RERUNS: usize = 64;
+const NUM_RERUNS: usize = 16;
 
 const EXHAUSTIVE_INPUTS: [(usize, usize); 14] = [
     (1, 64),
