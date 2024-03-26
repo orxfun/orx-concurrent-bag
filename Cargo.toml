@@ -1,9 +1,9 @@
 [package]
 name = "orx-concurrent-bag"
-version = "1.6.0"
+version = "1.7.0"
 edition = "2021"
 authors = ["orxfun <orx.ugur.arikan@gmail.com>"]
-description = "An efficient, convenient and lightweight grow-only concurrent collection, ideal for collecting results concurrently."
+description = "An efficient, convenient and lightweight grow-only concurrent collection."
 license = "MIT"
 repository = "https://github.com/orxfun/orx-concurrent-bag/"
 keywords = ["concurrency", "bag", "data-structures", "atomic", "lock-free"]
@@ -22,5 +22,5 @@ rayon = "1.9.0"
 test-case = "3.3.1"
 
 [[bench]]
-name = "grow"
+name = "collect_with_extend"
 harness = false

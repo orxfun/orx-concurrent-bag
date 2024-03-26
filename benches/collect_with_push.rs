@@ -1,7 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use orx_concurrent_bag::*;
-use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
 
 #[allow(dead_code)]
@@ -33,34 +31,7 @@ fn compute_large_data(i: usize, j: usize) -> LargeData {
     LargeData { a }
 }
 
-fn with_arc<T: 'static, P: PinnedVec<T> + 'static>(
-    num_threads: usize,
-    num_items_per_thread: usize,
-    do_sleep: bool,
-    compute: fn(usize, usize) -> T,
-    bag: ConcurrentBag<T, P>,
-) -> Arc<ConcurrentBag<T, P>> {
-    let bag = Arc::new(bag);
-    let mut thread_vec: Vec<thread::JoinHandle<()>> = Vec::new();
-
-    for i in 0..num_threads {
-        let bag = bag.clone();
-        thread_vec.push(thread::spawn(move || {
-            sleep(do_sleep, i);
-            for j in 0..num_items_per_thread {
-                bag.push(std::hint::black_box(compute(i, j)));
-            }
-        }));
-    }
-
-    for handle in thread_vec {
-        handle.join().unwrap();
-    }
-
-    bag
-}
-
-fn with_scope<T, P: PinnedVec<T>>(
+fn with_concurrent_bag<T: Sync, P: PinnedVec<T>>(
     num_threads: usize,
     num_items_per_thread: usize,
     do_sleep: bool,
@@ -143,23 +114,23 @@ fn bench_grow(c: &mut Criterion) {
                     black_box(num_threads),
                     black_box(num_items_per_thread),
                     add_workload,
-                    compute_large_data,
+                    compute_data_i32,
                 ))
             })
         });
 
-        // WITH-ARC
+        // WITH-SCOPE
 
         group.bench_with_input(
-            BenchmarkId::new("with_arc(Doubling)", &treatment),
+            BenchmarkId::new("with_concurrent_bag(Doubling)", &treatment),
             &(),
             |b, _| {
                 b.iter(|| {
-                    black_box(with_arc(
+                    black_box(with_concurrent_bag(
                         black_box(num_threads),
                         black_box(num_items_per_thread),
                         add_workload,
-                        compute_large_data,
+                        compute_data_i32,
                         ConcurrentBag::with_doubling_growth(),
                     ))
                 })
@@ -169,15 +140,15 @@ fn bench_grow(c: &mut Criterion) {
         let fragment_size = 2usize.pow(12);
         let num_linear_fragments = (max_len / fragment_size) + 1;
         group.bench_with_input(
-            BenchmarkId::new("with_arc(Linear(12))", &treatment),
+            BenchmarkId::new("with_concurrent_bag(Linear(12))", &treatment),
             &(),
             |b, _| {
                 b.iter(|| {
-                    black_box(with_arc(
+                    black_box(with_concurrent_bag(
                         black_box(num_threads),
                         black_box(num_items_per_thread),
                         add_workload,
-                        compute_large_data,
+                        compute_data_i32,
                         ConcurrentBag::with_linear_growth(12, num_linear_fragments),
                     ))
                 })
@@ -185,65 +156,15 @@ fn bench_grow(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("with_arc(Fixed)", &treatment),
+            BenchmarkId::new("with_concurrent_bag(Fixed)", &treatment),
             &(),
             |b, _| {
                 b.iter(|| {
-                    black_box(with_arc(
+                    black_box(with_concurrent_bag(
                         black_box(num_threads),
                         black_box(num_items_per_thread),
                         add_workload,
-                        compute_large_data,
-                        ConcurrentBag::with_fixed_capacity(max_len),
-                    ))
-                })
-            },
-        );
-
-        // WITH-SCOPE
-
-        group.bench_with_input(
-            BenchmarkId::new("with_scope(Doubling)", &treatment),
-            &(),
-            |b, _| {
-                b.iter(|| {
-                    black_box(with_scope(
-                        black_box(num_threads),
-                        black_box(num_items_per_thread),
-                        add_workload,
-                        compute_large_data,
-                        ConcurrentBag::with_doubling_growth(),
-                    ))
-                })
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("with_scope(Linear(12))", &treatment),
-            &(),
-            |b, _| {
-                b.iter(|| {
-                    black_box(with_scope(
-                        black_box(num_threads),
-                        black_box(num_items_per_thread),
-                        add_workload,
-                        compute_large_data,
-                        ConcurrentBag::with_linear_growth(12, num_linear_fragments),
-                    ))
-                })
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("with_scope(Fixed)", &treatment),
-            &(),
-            |b, _| {
-                b.iter(|| {
-                    black_box(with_scope(
-                        black_box(num_threads),
-                        black_box(num_items_per_thread),
-                        add_workload,
-                        compute_large_data,
+                        compute_data_i32,
                         ConcurrentBag::with_fixed_capacity(num_threads * num_items_per_thread),
                     ))
                 })
