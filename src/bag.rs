@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// An efficient, convenient and lightweight grow-only concurrent collection, ideal for collecting results concurrently.
 ///
 /// * **convenient**: `ConcurrentBag` can safely be shared among threads simply as a shared reference. Further, it is just a wrapper around any [`PinnedVec`](https://crates.io/crates/orx-pinned-vec) implementation adding concurrent safety guarantees. Therefore, underlying pinned vector and concurrent bag can be converted to each other back and forth without any cost.
-/// * **lightweight**: This crate takes a simplistic approach built on pinned vector guarantees which leads to concurrent programs with few dependencies and small binaries (see <a href="#section-approach-and-safety">approach and safety</a> for details).
-/// * **efficient**: `ConcurrentBag` is a lock free structure making use of a few atomic primitives. rayon is significantly faster when collecting small results under an extreme load (negligible work to compute results); however, `ConcurrentBag` starts to perform faster as result types get larger (see <a href="#section-benchmarks">benchmarks</a> for the experiments).
+/// * **lightweight**: This crate takes a simplistic approach built on pinned vector guarantees which leads to concurrent programs with few dependencies and small binaries.
+/// * **efficient**: `ConcurrentBag` is a lock free structure making use of a few atomic primitives, this leads to high performance growth.
 ///
 /// # Examples
 ///
