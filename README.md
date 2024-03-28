@@ -7,7 +7,7 @@ An efficient, convenient and lightweight grow-only concurrent collection.
 
 * **convenient**: `ConcurrentBag` can safely be shared among threads simply as a shared reference. Further, it is just a wrapper around any [`PinnedVec`](https://crates.io/crates/orx-pinned-vec) implementation adding concurrent safety guarantees. Therefore, underlying pinned vector and concurrent bag can be converted to each other back and forth without any cost (see <a href="#section-construction-and-conversions">construction and conversions</a>).
 * **lightweight**: This crate takes a simplistic approach built on pinned vector guarantees which leads to concurrent programs with few dependencies and small binaries (see <a href="#section-approach-and-safety">approach and safety</a> for details).
-* **efficient**: `ConcurrentBag` is a lock free structure making use of a few atomic primitives. We can see in experiments explained in <a href="#section-benchmarks">benchmarks</a> that it can outperform rayon's convenient parallel iterator due to its do-less and copy-free approach.
+* **efficient**: `ConcurrentBag` is a lock free structure making use of a few atomic primitives, this leads to high performance growth. You may see the details in <a href="#section-benchmarks">benchmarks</a> and further <a href="#section-performance-notes">performance notes</a>.
 
 # A. Examples
 
@@ -243,7 +243,7 @@ Another common approach to deal with false sharing is to add padding (unused byt
 
 <div id="section-construction-and-conversions"></div>
 
-# E. Construction and Conversions (from / into_inner)
+# E. `From` | `Into` | `into_inner`
 
 `ConcurrentBag` can be constructed by wrapping any pinned vector; i.e., `ConcurrentBag<T>` implements `From<P: PinnedVec<T>>`.
 Likewise, a concurrent vector can be unwrapped without any cost to the underlying pinned vector with `into_inner` method.

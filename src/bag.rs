@@ -1,4 +1,5 @@
 use crate::errors::{ERR_FAILED_TO_GROW, ERR_FAILED_TO_PUSH, ERR_REACHED_MAX_CAPACITY};
+use crate::mem_fill::{FillStrategy, Lazy};
 use orx_fixed_vec::FixedVec;
 use orx_pinned_vec::{PinnedVec, PinnedVecGrowthError};
 use orx_split_vec::{Doubling, Linear, SplitVec};
@@ -543,6 +544,104 @@ where
         pinned.iter().take(self.len())
     }
 
+    /// Returns a reference to the element at the `index`-th position of the bag.
+    /// It returns `None` when index is out of bounds.
+    ///
+    /// # Safety
+    ///
+    /// `ConcurrentBag` guarantees that each position is written exactly once by a single thread.
+    /// And further, no thread reads this position (see [`ConcurrentVec`](https://crates.io/crates/orx-concurrent-vec) for a safe read & write variant).
+    /// Therefore, there exists no race condition.
+    ///
+    /// On the other, hand `get` method partially breaks this by allowing reading.
+    /// Although it is still not very likely to have a race condition, there still exists a possibility which would lead to a race condition and UB.
+    /// Therefore, this method is `unsafe`.
+    ///
+    /// The race condition could be observed in the following situation. Say we have a `bag` of `char`s and we allocate memory to store incoming characters, say 4 positions.
+    /// If the following events happen in the exact order in time, we might have undefined behavior (UB):
+    /// * `bag.push('a')` is called from thread#1.
+    /// * `bag` atomically increases the `len` to 1.
+    /// * thread#2 calls `bag.get(0)` which is now in bounds.
+    /// * thread#2 receives uninitialized value (UB).
+    /// * thread#1 completes writing `a` to the 0-th position (one instant too late).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use orx_concurrent_bag::*;
+    ///
+    /// let bag = ConcurrentBag::new();
+    ///
+    /// bag.push('a');
+    /// bag.extend(['b', 'c', 'd']);
+    ///
+    /// unsafe {
+    ///     assert_eq!(bag.get(0), Some(&'a'));
+    ///     assert_eq!(bag.get(1), Some(&'b'));
+    ///     assert_eq!(bag.get(2), Some(&'c'));
+    ///     assert_eq!(bag.get(3), Some(&'d'));
+    ///     assert_eq!(bag.get(4), None);
+    /// }
+    /// ```
+    ///
+    /// The following could be considered as a practical use case.
+    ///
+    /// ```rust
+    /// use orx_concurrent_bag::*;
+    /// use std::time::Duration;
+    ///
+    /// // record measurements in (assume) random intervals
+    /// let measurements = ConcurrentBag::<i32>::new();
+    /// let rf_measurements = &measurements;
+    ///
+    /// // collect average of measurements every 50 milliseconds
+    /// let averages = ConcurrentBag::new();
+    /// let rf_averages = &averages;
+    ///
+    /// std::thread::scope(|s| {
+    ///
+    ///     // write to measurements
+    ///     s.spawn(move || {
+    ///         for i in 0..100 {
+    ///             std::thread::sleep(Duration::from_millis(i % 5));
+    ///             rf_measurements.push(i as i32);
+    ///         }
+    ///     });
+    ///
+    ///     // read from measurements & write to averages
+    ///     s.spawn(move || {
+    ///         for _ in 0..10 {
+    ///             let count = rf_measurements.len();
+    ///             if count == 0 {
+    ///                 rf_averages.push(0.0);
+    ///             } else {
+    ///                 let mut sum = 0;
+    ///                 for i in 0..rf_measurements.len() {
+    ///                     sum += unsafe { rf_measurements.get(i) }.copied().unwrap_or(0);
+    ///                 }
+    ///                 let average = sum as f32 / count as f32;
+    ///                 rf_averages.push(average);
+    ///             }
+    ///             std::thread::sleep(Duration::from_millis(10));
+    ///         }
+    ///     });
+    /// });
+    ///
+    /// assert_eq!(measurements.len(), 100);
+    /// assert_eq!(averages.len(), 10);
+    /// ```
+    pub unsafe fn get(&self, index: usize) -> Option<&T> {
+        if index < self.len() && index < self.capacity() {
+            let pinned = unsafe { &mut *self.pinned.get() };
+            let ptr = unsafe { pinned.get_ptr_mut(index) };
+            ptr.and_then(|x| x.as_ref())
+        } else {
+            None
+        }
+    }
+
+    // mutate elements
+
     /// Concurrent, thread-safe method to push the given `value` to the back of the bag,
     /// and returns the position or index of the pushed value.
     ///
@@ -673,6 +772,55 @@ where
     /// In other words, instead of using a `ConcurrentBag<T>`, we can use `ConcurrentBag<CachePadded<T>>`.
     /// However, this solution leads to increased memory requirement.
     pub fn push(&self, value: T) -> usize {
+        self.push_and_fill::<Lazy>(value)
+    }
+
+    /// Core and generic version of the [`ConcurrentBag::push`] method.
+    ///
+    /// When an element is pushed to the bag, one of the two cases might happen:
+    /// * we have capacity, and hence, we directly write,
+    /// * we do not have capacity,
+    ///   * we grow the underlying storage,
+    ///   * and then we write the value.
+    ///
+    /// Since length of the concurrent bag is atomically and separately controlled, we are not required to fill or initialize the out-of-bounds memory when we grow.
+    /// This is the case with the regular `push` and `extend` methods.
+    ///
+    /// However, in some situations, we might want to initialize memory of the out-of-bounds positions, such as the following:
+    /// * we will use `unsafe get` or `unsafe iter` method,
+    /// * we want avoid the possibility of undefined behavior due to reading uninitialized memory.
+    ///
+    /// We can achieve this by replacing our
+    /// * `push(value)` calls with `push_and_fill::<EagerWithDefault>(value)`, and
+    /// * `extend(values)` calls with `extend_and_fill::<_, _, EagerWithDefault>(values)` calls, and
+    /// * `extend_n_items(values, len)` calls with `extend_n_items::<_, EagerWithDefault>(values, len)` calls.
+    ///
+    /// This will make sure that we will read the default value of the type in the possible case of race conditions we might experience by using the unsafe methods such as `get` or `iter`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `num_items` elements do not fit in the concurrent bag's maximum capacity.
+    ///
+    /// Note that this is an important safety assertion in the concurrent context; however, not a practical limitation.
+    /// Please see the [`ConcurrentBag::maximum_capacity`] for details.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use orx_concurrent_bag::*;
+    ///
+    /// let bag = ConcurrentBag::new();
+    ///
+    /// bag.push('a');
+    /// bag.push_and_fill::<Lazy>('b'); // equivalent to `push`
+    ///
+    /// // this will initialize out-of-bounds memory with `char::default()`
+    /// // only if this call requires allocation
+    /// bag.push_and_fill::<EagerWithDefault>('c');
+    ///
+    /// assert_eq!(bag.into_inner(), &['a', 'b', 'c'])
+    /// ```
+    pub fn push_and_fill<Fill: FillStrategy<T, P>>(&self, value: T) -> usize {
         let idx = self.len.fetch_add(1, Ordering::AcqRel);
         self.assert_has_capacity_for(idx);
 
@@ -689,6 +837,7 @@ where
                 // we are responsible for growth
                 std::cmp::Ordering::Equal => {
                     let new_capacity = self.grow_to(capacity + 1);
+                    Fill::fill_new_memory(self, idx, new_capacity);
                     self.capacity.store(new_capacity, Ordering::Relaxed);
                     self.write(idx, value);
                     break;
@@ -820,9 +969,63 @@ where
         IntoIter: IntoIterator<Item = T, IntoIter = Iter>,
         Iter: Iterator<Item = T> + ExactSizeIterator,
     {
+        self.extend_and_fill::<_, _, Lazy>(values)
+    }
+
+    /// Core and generic version of the [`ConcurrentBag::extend`] method.
+    ///
+    /// When an element is pushed to the bag, one of the two cases might happen:
+    /// * we have capacity, and hence, we directly write,
+    /// * we do not have capacity,
+    ///   * we grow the underlying storage,
+    ///   * and then we write the value.
+    ///
+    /// Since length of the concurrent bag is atomically and separately controlled, we are not required to fill or initialize the out-of-bounds memory when we grow.
+    /// This is the case with the regular `push` and `extend` methods.
+    ///
+    /// However, in some situations, we might want to initialize memory of the out-of-bounds positions, such as the following:
+    /// * we will use `unsafe get` or `unsafe iter` method,
+    /// * we want avoid the possibility of undefined behavior due to reading uninitialized memory.
+    ///
+    /// We can achieve this by replacing our
+    /// * `push(value)` calls with `push_and_fill::<EagerWithDefault>(value)`, and
+    /// * `extend(values)` calls with `extend_and_fill::<_, _, EagerWithDefault>(values)` calls, and
+    /// * `extend_n_items(values, len)` calls with `extend_n_items::<_, EagerWithDefault>(values, len)` calls.
+    ///
+    /// This will make sure that we will read the default value of the type in the possible case of race conditions we might experience by using the unsafe methods such as `get` or `iter`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if not all of the `values` fit in the concurrent bag's maximum capacity.
+    ///
+    /// Note that this is an important safety assertion in the concurrent context; however, not a practical limitation.
+    /// Please see the [`ConcurrentBag::maximum_capacity`] for details.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use orx_concurrent_bag::*;
+    ///
+    /// let bag = ConcurrentBag::new();
+    ///
+    /// bag.extend(['a', 'b']);
+    /// bag.extend_and_fill::<_, _, Lazy>(['c', 'd']); // equivalent to `extend`
+    ///
+    /// // this will initialize out-of-bounds memory with `char::default()`
+    /// // only if this call requires allocation
+    /// bag.extend_and_fill::<_, _, EagerWithDefault>(['e', 'f']);
+    ///
+    /// assert_eq!(bag.into_inner(), &['a', 'b', 'c', 'd', 'e', 'f'])
+    /// ```
+    pub fn extend_and_fill<IntoIter, Iter, Fill>(&self, values: IntoIter) -> usize
+    where
+        IntoIter: IntoIterator<Item = T, IntoIter = Iter>,
+        Iter: Iterator<Item = T> + ExactSizeIterator,
+        Fill: FillStrategy<T, P>,
+    {
         let values = values.into_iter();
         let num_items = values.len();
-        unsafe { self.extend_n_items(values, num_items) }
+        unsafe { self.extend_n_items_and_fill::<_, Fill>(values, num_items) }
     }
 
     /// Concurrent, thread-safe method to push `num_items` elements yielded by the `values` iterator to the back of the bag.
@@ -959,6 +1162,80 @@ where
     where
         IntoIter: IntoIterator<Item = T>,
     {
+        self.extend_n_items_and_fill::<_, Lazy>(values, num_items)
+    }
+
+    /// Core and generic version of the [`ConcurrentBag::extend_n_items`] method.
+    ///
+    /// When an element is pushed to the bag, one of the two cases might happen:
+    /// * we have capacity, and hence, we directly write,
+    /// * we do not have capacity,
+    ///   * we grow the underlying storage,
+    ///   * and then we write the value.
+    ///
+    /// Since length of the concurrent bag is atomically and separately controlled, we are not required to fill or initialize the out-of-bounds memory when we grow.
+    /// This is the case with the regular `push` and `extend` methods.
+    ///
+    /// However, in some situations, we might want to initialize memory of the out-of-bounds positions, such as the following:
+    /// * we will use `unsafe get` or `unsafe iter` method,
+    /// * we want avoid the possibility of undefined behavior due to reading uninitialized memory.
+    ///
+    /// We can achieve this by replacing our
+    /// * `push(value)` calls with `push_and_fill::<EagerWithDefault>(value)`, and
+    /// * `extend(values)` calls with `extend_and_fill::<_, _, EagerWithDefault>(values)` calls, and
+    /// * `extend_n_items(values, len)` calls with `extend_n_items::<_, EagerWithDefault>(values, len)` calls.
+    ///
+    /// This will make sure that we will read the default value of the type in the possible case of race conditions we might experience by using the unsafe methods such as `get` or `iter`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `num_items` elements do not fit in the concurrent bag's maximum capacity.
+    ///
+    /// Note that this is an important safety assertion in the concurrent context; however, not a practical limitation.
+    /// Please see the [`ConcurrentBag::maximum_capacity`] for details.
+    ///
+    /// # Safety
+    ///
+    /// As explained above, extend method calls first increment the atomic counter by `num_items`.
+    /// This thread is responsible for filling these reserved `num_items` positions.
+    /// * with safe `extend` method, this is guaranteed and safe since the iterator is an `ExactSizeIterator`;
+    /// * however, `extend_n_items` accepts any iterator and `num_items` is provided explicitly by the caller.
+    ///
+    /// Ideally, the `values` iterator must yield exactly `num_items` elements and the caller is responsible for this condition to hold.
+    ///
+    /// If the `values` iterator is capable of yielding more than `num_items` elements,
+    /// the `extend` call will extend the bag with the first `num_items` yielded elements and ignore the rest of the iterator.
+    /// This is most likely a bug; however, not an undefined behavior.
+    ///
+    /// On the other hand, if the `values` iterator is short of `num_items` elements,
+    /// this will lead to uninitialized memory positions in underlying storage of the bag which is UB.
+    /// Therefore, this method is `unsafe`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use orx_concurrent_bag::*;
+    ///
+    /// let bag = ConcurrentBag::new();
+    ///
+    /// unsafe { bag.extend_n_items(['a', 'b'], 2) };
+    /// unsafe { bag.extend_n_items_and_fill::<_, Lazy>(['c', 'd'], 2) }; // equivalent to `extend_n_items`
+    ///
+    /// // this will initialize out-of-bounds memory with `char::default()`
+    /// // only if this call requires allocation
+    /// unsafe { bag.extend_n_items_and_fill::<_, EagerWithDefault>(['e', 'f'], 2) };
+    ///
+    /// assert_eq!(bag.into_inner(), &['a', 'b', 'c', 'd', 'e', 'f'])
+    /// ```
+    pub unsafe fn extend_n_items_and_fill<IntoIter, Fill>(
+        &self,
+        values: IntoIter,
+        num_items: usize,
+    ) -> usize
+    where
+        IntoIter: IntoIterator<Item = T>,
+        Fill: FillStrategy<T, P>,
+    {
         let values = values.into_iter();
 
         let beg_idx = self.len.fetch_add(num_items, Ordering::AcqRel);
@@ -983,6 +1260,7 @@ where
                 // we are responsible for growth
                 _ => {
                     let new_capacity = self.grow_to(new_len);
+                    Fill::fill_new_memory(self, beg_idx, new_capacity);
                     self.capacity.store(new_capacity, Ordering::Relaxed);
                     self.write_many(beg_idx, values);
                     break;
@@ -1082,7 +1360,7 @@ where
     }
 
     #[inline]
-    fn write(&self, idx: usize, value: T) {
+    pub(crate) fn write(&self, idx: usize, value: T) {
         let pinned = unsafe { &mut *self.pinned.get() };
         let ptr = unsafe { pinned.get_ptr_mut(idx) }.expect(ERR_FAILED_TO_PUSH);
         unsafe { *ptr = value };
@@ -1106,13 +1384,15 @@ unsafe impl<T: Send, P: PinnedVec<T>> Send for ConcurrentBag<T, P> {}
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::HashSet,
-        sync::{Arc, Mutex},
-    };
+    use crate::EagerWithDefault;
 
     use super::*;
     use orx_split_vec::Recursive;
+    use std::{
+        collections::HashSet,
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
 
     #[test]
     fn new_len_empty_clear() {
@@ -1225,6 +1505,62 @@ mod tests {
     }
 
     #[test]
+    fn get() {
+        // record measurements in (assume) random intervals
+        let measurements = ConcurrentBag::<i32>::new();
+        let rf_measurements = &measurements;
+
+        // collect sum of measurements every 50 milliseconds
+        let sums = ConcurrentBag::new();
+        let rf_sums = &sums;
+
+        // collect average of measurements every 50 milliseconds
+        let averages = ConcurrentBag::new();
+        let rf_averages = &averages;
+
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                for i in 0..100 {
+                    std::thread::sleep(Duration::from_millis(i % 5));
+                    rf_measurements.push(i as i32);
+                }
+            });
+
+            s.spawn(move || {
+                for _ in 0..10 {
+                    let mut sum = 0;
+                    for i in 0..rf_measurements.len() {
+                        sum += unsafe { rf_measurements.get(i) }.copied().unwrap_or(0);
+                    }
+                    rf_sums.push(sum);
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            });
+
+            s.spawn(move || {
+                for _ in 0..10 {
+                    let count = rf_measurements.len();
+                    if count == 0 {
+                        rf_averages.push(0.0);
+                    } else {
+                        let mut sum = 0;
+                        for i in 0..rf_measurements.len() {
+                            sum += unsafe { rf_measurements.get(i) }.copied().unwrap_or(0);
+                        }
+                        let average = sum as f32 / count as f32;
+                        rf_averages.push(average);
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            });
+        });
+
+        assert_eq!(measurements.len(), 100);
+        assert_eq!(sums.len(), 10);
+        assert_eq!(averages.len(), 10);
+    }
+
+    #[test]
     fn iter() {
         let mut bag = ConcurrentBag::new();
 
@@ -1329,7 +1665,13 @@ mod tests {
                 let indices_set = indices_set.clone();
                 s.spawn(move || {
                     for j in 0..num_items_per_thread {
-                        let idx = bag_ref.push(i * 100000 + j);
+                        let idx = if j % 3 == 0 {
+                            bag_ref.push(i * 100000 + j)
+                        } else if j % 3 == 1 {
+                            bag_ref.push_and_fill::<EagerWithDefault>(i * 100000 + j)
+                        } else {
+                            bag_ref.push_and_fill::<Lazy>(i * 100000 + j)
+                        };
                         let mut set = indices_set.lock().expect("is ok");
                         set.insert(idx);
                     }
@@ -1396,7 +1738,14 @@ mod tests {
                 let indices_set = indices_set.clone();
                 s.spawn(move || {
                     let iter = (0..num_items_per_thread).map(|j| i * 100000 + j);
-                    let begin_idx = bag_ref.extend(iter);
+
+                    let begin_idx = if i % 3 == 0 {
+                        bag_ref.extend(iter)
+                    } else if i % 3 == 1 {
+                        bag_ref.extend_and_fill::<_, _, EagerWithDefault>(iter)
+                    } else {
+                        bag_ref.extend_and_fill::<_, _, Lazy>(iter)
+                    };
 
                     let mut set = indices_set.lock().expect("is ok");
                     set.insert(begin_idx);
@@ -1425,7 +1774,19 @@ mod tests {
                 let indices_set = indices_set.clone();
                 s.spawn(move || {
                     let iter = (0..num_items_per_thread).map(|j| i * 100000 + j);
-                    let begin_idx = unsafe { bag_ref.extend_n_items(iter, num_items_per_thread) };
+
+                    let begin_idx = unsafe {
+                        if i % 3 == 0 {
+                            bag_ref.extend_n_items(iter, num_items_per_thread)
+                        } else if i % 3 == 1 {
+                            bag_ref.extend_n_items_and_fill::<_, EagerWithDefault>(
+                                iter,
+                                num_items_per_thread,
+                            )
+                        } else {
+                            bag_ref.extend_n_items_and_fill::<_, Lazy>(iter, num_items_per_thread)
+                        }
+                    };
 
                     let mut set = indices_set.lock().expect("is ok");
                     set.insert(begin_idx);
