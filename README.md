@@ -7,7 +7,7 @@ An efficient, convenient and lightweight grow-only concurrent collection.
 
 * **convenient**: `ConcurrentBag` can safely be shared among threads simply as a shared reference. Further, it is just a wrapper around any [`PinnedVec`](https://crates.io/crates/orx-pinned-vec) implementation adding concurrent safety guarantees. Therefore, underlying pinned vector and concurrent bag can be converted to each other back and forth without any cost (see <a href="#section-construction-and-conversions">construction and conversions</a>).
 * **lightweight**: This crate takes a simplistic approach built on pinned vector guarantees which leads to concurrent programs with few dependencies and small binaries (see <a href="#section-approach-and-safety">approach and safety</a> for details).
-* **efficient**: `ConcurrentBag` is a lock free structure making use of a few atomic primitives. We can see in experiments explained in <a href="#section-benchmarks">benchmarks</a> that it can outperform rayon's convenient parallel iterator due to its do-less and copy-free approach.
+* **efficient**: `ConcurrentBag` is a lock free structure making use of a few atomic primitives, this leads to high performance growth. You may see the details in <a href="#section-benchmarks">benchmarks</a> and further <a href="#section-performance-notes">performance notes</a>.
 
 # A. Examples
 
@@ -34,11 +34,10 @@ std::thread::scope(|s| {
     }
 });
 
-let mut vec_from_bag: Vec<_> = bag.into_inner().iter().copied().collect();
-vec_from_bag.sort();
-let mut expected: Vec<_> = (0..num_threads).flat_map(|i| (0..num_items_per_thread).map(move |j| i * 1000 + j)).collect();
-expected.sort();
-assert_eq!(vec_from_bag, expected);
+assert_eq!(bag.len(), num_threads * num_items_per_thread);
+
+let pinned_vec = bag.into_inner();
+assert_eq!(pinned_vec.len(), num_threads * num_items_per_thread);
 ```
 
 <div id="section-approach-and-safety"></div>
@@ -211,10 +210,7 @@ Required change in the code from `push` to `extend` is not significant. The exam
 use orx_concurrent_bag::*;
 
 let (num_threads, num_items_per_thread) = (4, 1_024);
-
 let bag = ConcurrentBag::new();
-
-// just take a reference and share among threads
 let bag_ref = &bag;
 let batch_size = 16;
 
@@ -223,18 +219,11 @@ std::thread::scope(|s| {
         s.spawn(move || {
             for j in (0..num_items_per_thread).step_by(batch_size) {
                 let iter = (j..(j + batch_size)).map(|j| i * 1000 + j);
-                // concurrently collect results simply by calling `extend`
                 bag_ref.extend(iter);
             }
         });
     }
 });
-
-let mut vec_from_bag: Vec<_> = bag.into_inner().iter().copied().collect();
-vec_from_bag.sort();
-let mut expected: Vec<_> = (0..num_threads).flat_map(|i| (0..num_items_per_thread).map(move |j| i * 1000 + j)).collect();
-expected.sort();
-assert_eq!(vec_from_bag, expected);
 ```
 
 ### Solution-II: Padding
@@ -243,7 +232,7 @@ Another common approach to deal with false sharing is to add padding (unused byt
 
 <div id="section-construction-and-conversions"></div>
 
-# E. Construction and Conversions (from / into_inner)
+# E. `From` | `Into` | `into_inner`
 
 `ConcurrentBag` can be constructed by wrapping any pinned vector; i.e., `ConcurrentBag<T>` implements `From<P: PinnedVec<T>>`.
 Likewise, a concurrent vector can be unwrapped without any cost to the underlying pinned vector with `into_inner` method.
