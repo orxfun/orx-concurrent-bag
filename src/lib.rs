@@ -3,7 +3,7 @@
 //! [![orx-concurrent-bag crate](https://img.shields.io/crates/v/orx-concurrent-bag.svg)](https://crates.io/crates/orx-concurrent-bag)
 //! [![orx-concurrent-bag documentation](https://docs.rs/orx-concurrent-bag/badge.svg)](https://docs.rs/orx-concurrent-bag)
 //!
-//! An efficient, convenient and lightweight grow-only concurrent collection.
+//! An efficient, convenient and lightweight grow-only concurrent data structure allowing high performance concurrent collection.
 //!
 //! * **convenient**: `ConcurrentBag` can safely be shared among threads simply as a shared reference. Further, it is just a wrapper around any [`PinnedVec`](https://crates.io/crates/orx-pinned-vec) implementation adding concurrent safety guarantees. Therefore, underlying pinned vector and concurrent bag can be converted to each other back and forth without any cost (see <a href="#section-construction-and-conversions">construction and conversions</a>).
 //! * **lightweight**: This crate takes a simplistic approach built on pinned vector guarantees which leads to concurrent programs with few dependencies and small binaries (see <a href="#section-approach-and-safety">approach and safety</a> for details).
