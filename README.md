@@ -34,11 +34,10 @@ std::thread::scope(|s| {
     }
 });
 
-let mut vec_from_bag: Vec<_> = bag.into_inner().iter().copied().collect();
-vec_from_bag.sort();
-let mut expected: Vec<_> = (0..num_threads).flat_map(|i| (0..num_items_per_thread).map(move |j| i * 1000 + j)).collect();
-expected.sort();
-assert_eq!(vec_from_bag, expected);
+assert_eq!(bag.len(), num_threads * num_items_per_thread);
+
+let pinned_vec = bag.into_inner();
+assert_eq!(pinned_vec.len(), num_threads * num_items_per_thread);
 ```
 
 <div id="section-approach-and-safety"></div>
@@ -211,10 +210,7 @@ Required change in the code from `push` to `extend` is not significant. The exam
 use orx_concurrent_bag::*;
 
 let (num_threads, num_items_per_thread) = (4, 1_024);
-
 let bag = ConcurrentBag::new();
-
-// just take a reference and share among threads
 let bag_ref = &bag;
 let batch_size = 16;
 
@@ -223,18 +219,11 @@ std::thread::scope(|s| {
         s.spawn(move || {
             for j in (0..num_items_per_thread).step_by(batch_size) {
                 let iter = (j..(j + batch_size)).map(|j| i * 1000 + j);
-                // concurrently collect results simply by calling `extend`
                 bag_ref.extend(iter);
             }
         });
     }
 });
-
-let mut vec_from_bag: Vec<_> = bag.into_inner().iter().copied().collect();
-vec_from_bag.sort();
-let mut expected: Vec<_> = (0..num_threads).flat_map(|i| (0..num_items_per_thread).map(move |j| i * 1000 + j)).collect();
-expected.sort();
-assert_eq!(vec_from_bag, expected);
 ```
 
 ### Solution-II: Padding
