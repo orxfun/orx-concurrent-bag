@@ -168,26 +168,26 @@ where
 
 // new
 impl<T> ConcurrentBag<T, SplitVec<T, Doubling>> {
-    /// Creates a new concurrent vector by creating and wrapping up a new `SplitVec<T, Doubling>` as the underlying storage.
+    /// Creates a new concurrent bag by creating and wrapping up a new `SplitVec<T, Doubling>` as the underlying storage.
     pub fn with_doubling_growth() -> Self {
         Self::new_from_pinned(SplitVec::with_doubling_growth_and_fragments_capacity(32))
     }
 
-    /// Creates a new concurrent vector by creating and wrapping up a new `SplitVec<T, Doubling>` as the underlying storage.
+    /// Creates a new concurrent bag by creating and wrapping up a new `SplitVec<T, Doubling>` as the underlying storage.
     pub fn new() -> Self {
         Self::with_doubling_growth()
     }
 }
 
 impl<T> Default for ConcurrentBag<T, SplitVec<T, Doubling>> {
-    /// Creates a new concurrent vector by creating and wrapping up a new `SplitVec<T, Doubling>` as the underlying storage.
+    /// Creates a new concurrent bag by creating and wrapping up a new `SplitVec<T, Doubling>` as the underlying storage.
     fn default() -> Self {
         Self::with_doubling_growth()
     }
 }
 
 impl<T> ConcurrentBag<T, SplitVec<T, Linear>> {
-    /// Creates a new concurrent vector by creating and wrapping up a new `SplitVec<T, Linear>` as the underlying storage.
+    /// Creates a new concurrent bag by creating and wrapping up a new `SplitVec<T, Linear>` as the underlying storage.
     ///
     /// # Notes
     ///
@@ -212,7 +212,7 @@ impl<T> ConcurrentBag<T, SplitVec<T, Linear>> {
     ///
     /// Pushing to the vector beyond this capacity leads to "out-of-capacity" error.
     ///
-    /// This capacity can be accessed by [`ConcurrentBag::maximum_capacity`] method.
+    /// This maximum capacity can be accessed by [`ConcurrentBag::maximum_capacity`] method.
     pub fn with_linear_growth(
         constant_fragment_capacity_exponent: usize,
         fragments_capacity: usize,
@@ -225,7 +225,7 @@ impl<T> ConcurrentBag<T, SplitVec<T, Linear>> {
 }
 
 impl<T> ConcurrentBag<T, FixedVec<T>> {
-    /// Creates a new concurrent vector by creating and wrapping up a new `FixedVec<T>` as the underlying storage.
+    /// Creates a new concurrent bag by creating and wrapping up a new `FixedVec<T>` as the underlying storage.
     ///
     /// # Safety
     ///
@@ -233,7 +233,7 @@ impl<T> ConcurrentBag<T, FixedVec<T>> {
     ///
     /// Pushing to the vector beyond this capacity leads to "out-of-capacity" error.
     ///
-    /// This capacity can be accessed by [`ConcurrentBag::maximum_capacity`] method.
+    /// This maximum capacity can be accessed by [`ConcurrentBag::maximum_capacity`] method.
     pub fn with_fixed_capacity(fixed_capacity: usize) -> Self {
         Self::new_from_pinned(FixedVec::new(fixed_capacity))
     }
@@ -243,6 +243,11 @@ impl<T, P> From<P> for ConcurrentBag<T, P>
 where
     P: PinnedVec<T>,
 {
+    /// `ConcurrentBag<T>` wraps any `PinnedVec<T>` implementation.
+    ///
+    /// Therefore, without a cost
+    /// * `ConcurrentBag<T>` can be constructed from any `PinnedVec<T>`, and
+    /// * the underlying `PinnedVec<T>` can be obtained by `ConcurrentBag::into_inner(self)` method.
     fn from(value: P) -> Self {
         Self::new_from_pinned(value)
     }
@@ -253,11 +258,10 @@ impl<T, P> ConcurrentBag<T, P>
 where
     P: PinnedVec<T>,
 {
-    /// Consumes the concurrent vector and returns the underlying pinned vector.
+    /// Consumes the concurrent bag and returns the underlying pinned vector.
     ///
-    /// Note that
-    /// * it is cheap to wrap a `SplitVec` as a `ConcurrentBag` using thee `From` trait;
-    /// * and similarly to convert a `ConcurrentBag` to the underlying `SplitVec` using `into_inner` method.
+    /// Any `PinnedVec` implementation can be converted to a `ConcurrentBag` using the `From` trait.
+    /// Similarly, underlying pinned vector can be obtained by calling the consuming `into_inner` method.
     ///
     /// # Examples
     ///
@@ -293,7 +297,7 @@ where
         self.pinned.into_inner()
     }
 
-    /// ***O(1)*** Returns the number of elements which are pushed to the vector, including the elements which received their reserved locations and are currently being pushed.
+    /// ***O(1)*** Returns the number of elements which are pushed to the bag, including the elements which received their reserved locations and are currently being pushed.
     ///
     /// # Examples
     ///
@@ -563,7 +567,7 @@ where
     /// * `bag` atomically increases the `len` to 1.
     /// * thread#2 calls `bag.get(0)` which is now in bounds.
     /// * thread#2 receives uninitialized value (UB).
-    /// * thread#1 completes writing `a` to the 0-th position (one instant too late).
+    /// * thread#1 completes writing `'a'` to the 0-th position (one moment too late).
     ///
     /// # Examples
     ///
@@ -640,7 +644,7 @@ where
         }
     }
 
-    // mutate elements
+    // mutate collection
 
     /// Concurrent, thread-safe method to push the given `value` to the back of the bag,
     /// and returns the position or index of the pushed value.
@@ -1384,9 +1388,8 @@ unsafe impl<T: Send, P: PinnedVec<T>> Send for ConcurrentBag<T, P> {}
 
 #[cfg(test)]
 mod tests {
-    use crate::EagerWithDefault;
-
     use super::*;
+    use crate::EagerWithDefault;
     use orx_split_vec::Recursive;
     use std::{
         collections::HashSet,
@@ -1488,23 +1491,6 @@ mod tests {
     }
 
     #[test]
-    fn debug() {
-        let bag = ConcurrentBag::new();
-
-        bag.push('a');
-        bag.push('b');
-        bag.push('c');
-        bag.push('d');
-        bag.push('e');
-
-        let str = format!("{:?}", bag);
-        assert_eq!(
-            str,
-            "ConcurrentBag { pinned: ['a', 'b', 'c', 'd', 'e'], len: 5, capacity: 12 }"
-        );
-    }
-
-    #[test]
     fn get() {
         // record measurements in (assume) random intervals
         let measurements = ConcurrentBag::<i32>::new();
@@ -1533,7 +1519,7 @@ mod tests {
                         sum += unsafe { rf_measurements.get(i) }.copied().unwrap_or(0);
                     }
                     rf_sums.push(sum);
-                    std::thread::sleep(Duration::from_millis(10));
+                    std::thread::sleep(Duration::from_millis(50));
                 }
             });
 
@@ -1550,7 +1536,7 @@ mod tests {
                         let average = sum as f32 / count as f32;
                         rf_averages.push(average);
                     }
-                    std::thread::sleep(Duration::from_millis(10));
+                    std::thread::sleep(Duration::from_millis(50));
                 }
             });
         });

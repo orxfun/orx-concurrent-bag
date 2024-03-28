@@ -7,7 +7,9 @@ An efficient, convenient and lightweight grow-only concurrent collection.
 
 * **convenient**: `ConcurrentBag` can safely be shared among threads simply as a shared reference. Further, it is just a wrapper around any [`PinnedVec`](https://crates.io/crates/orx-pinned-vec) implementation adding concurrent safety guarantees. Therefore, underlying pinned vector and concurrent bag can be converted to each other back and forth without any cost (see <a href="#section-construction-and-conversions">construction and conversions</a>).
 * **lightweight**: This crate takes a simplistic approach built on pinned vector guarantees which leads to concurrent programs with few dependencies and small binaries (see <a href="#section-approach-and-safety">approach and safety</a> for details).
-* **efficient**: `ConcurrentBag` is a lock free structure making use of a few atomic primitives, this leads to high performance growth. You may see the details in <a href="#section-benchmarks">benchmarks</a> and further <a href="#section-performance-notes">performance notes</a>.
+* **efficient**: `ConcurrentBag` is a lock free structure making use of atomic primitives, this leads to high performance growth. You may see the details in <a href="#section-benchmarks">benchmarks</a> and further <a href="#section-performance-notes">performance notes</a>.
+
+Note that `ConcurrentBag` is a **write only** collection which is optimized for high performance concurrent collection. When we need to safely read elements while the collection concurrently grows, [`ConcurrentVec`](https://crates.io/crates/orx-concurrent-vec) is preferable due to its additional safety guarantees. Having almost identical api, switching between `ConcurrentBag` and `ConcurrentVec` is straightforward.
 
 # A. Examples
 
@@ -232,7 +234,7 @@ Another common approach to deal with false sharing is to add padding (unused byt
 
 <div id="section-construction-and-conversions"></div>
 
-# E. `From` | `Into` | `into_inner`
+# E. `From` | `into_inner`
 
 `ConcurrentBag` can be constructed by wrapping any pinned vector; i.e., `ConcurrentBag<T>` implements `From<P: PinnedVec<T>>`.
 Likewise, a concurrent vector can be unwrapped without any cost to the underlying pinned vector with `into_inner` method.
@@ -271,18 +273,6 @@ use orx_concurrent_bag::*;
 let split_vec: SplitVec<i32> = (0..1024).collect();
 let bag: ConcurrentBag<_> = split_vec.into();
 ```
-
-# F. Write-Only vs Read-Write
-
-The concurrent bag is a write-only bag which is convenient and efficient for collecting elements.
-
-See [`ConcurrentVec`](https://crates.io/crates/orx-concurrent-vec) for a read-and-write variant which
-
-* guarantees that reading and writing never happen concurrently, and hence,
-* allows safe iteration or access to already written elements of the concurrent vector.
-
-However, `ConcurrentVec<T>` requires to use a `PinnedVec<Option<T>>` as the underlying storage rather than `PinnedVec<T>`.
-
 
 # License
 
