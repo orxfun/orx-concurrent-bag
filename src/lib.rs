@@ -293,13 +293,11 @@
 mod bag;
 mod common_traits;
 mod errors;
-mod mem_fill;
 
 /// Common relevant traits, structs, enums.
 pub mod prelude;
 
 pub use bag::ConcurrentBag;
-pub use mem_fill::{EagerWithDefault, FillStrategy, Lazy};
 pub use orx_fixed_vec::FixedVec;
 pub use orx_pinned_vec::{CapacityState, PinnedVec, PinnedVecGrowthError};
 pub use orx_split_vec::{Doubling, Linear, Recursive, SplitVec};
