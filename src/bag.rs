@@ -264,7 +264,7 @@ where
 {
     /// Converts the given `PinnedVec<T>` implementation into a concurrent bag with memory zeroing.
     ///
-    /// Note that default [`zeroes_memory_on_allocation`] strategy of a `ConcurrentBag` is `false`.
+    /// Note that default [`ConcurrentBag::zeroes_memory_on_allocation`] strategy of a `ConcurrentBag` is `false`.
     /// This is similar to dynamic size containers such as vectors and it is safe since:
     /// * `ConcurrentBag` does not have a safe api to read elements while they are being concurrently written.
     /// * Safe reading only happens by converting the bag into the underlying pinned vector by the consuming `into_inner` method.
@@ -334,7 +334,7 @@ where
     ///
     /// Note that the default strategy is `false`.
     ///
-    /// In order to create a concurrent bag which zeroes out memory upon allocation, use the [`new_with_mem_zeroing`] method.
+    /// In order to create a concurrent bag which zeroes out memory upon allocation, use the [`ConcurrentBag::new_with_mem_zeroing`] method.
     pub fn zeroes_memory_on_allocation(&self) -> bool {
         self.zero_memory
     }
