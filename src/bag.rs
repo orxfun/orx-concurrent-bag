@@ -158,14 +158,15 @@ pub struct ConcurrentBag<T, P = SplitVec<T, Doubling>>
 where
     P: PinnedVec<T>,
 {
+    phantom: PhantomData<T>,
     pinned: UnsafeCell<P>,
-    len: AtomicUsize,
-    capacity: AtomicUsize,
     maximum_capacity: UnsafeCell<usize>,
     zero_memory: bool,
-    phantom: PhantomData<T>,
+    len: AtomicUsize,
+    capacity: AtomicUsize,
 }
 
+// new
 impl<T> ConcurrentBag<T, SplitVec<T, Doubling>> {
     /// Creates a new concurrent bag by creating and wrapping up a new `SplitVec<T, Doubling>` as the underlying storage.
     pub fn with_doubling_growth() -> Self {
@@ -421,7 +422,6 @@ where
     /// // actually no new allocation yet; precisely additional memory for 10 pairs of pointers is used
     /// assert_eq!(bag.capacity(), 2usize.pow(10)); // still only the first fragment capacity
     ///
-    /// dbg!(bag.maximum_capacity(), 2usize.pow(10) * 30);
     /// assert_eq!(bag.maximum_capacity(), 2usize.pow(10) * 30); // now it can safely reach 2^10 * 30
     ///
     /// // FixedVec<_>: pre-allocated, exact and strict
@@ -511,7 +511,6 @@ where
     /// // actually no new allocation yet; precisely additional memory for 10 pairs of pointers is used
     /// assert_eq!(bag.capacity(), 2usize.pow(10)); // still only the first fragment capacity
     ///
-    /// dbg!(bag.maximum_capacity(), 2usize.pow(10) * 30);
     /// assert_eq!(bag.maximum_capacity(), 2usize.pow(10) * 30); // now it can safely reach 2^10 * 30
     ///
     /// // FixedVec<_>: pre-allocated, exact and strict
@@ -821,6 +820,7 @@ where
         let idx = self.len.fetch_add(1, Ordering::AcqRel);
         self.assert_has_capacity_for(idx);
 
+        #[allow(clippy::never_loop)]
         loop {
             let capacity = self.capacity.load(Ordering::Relaxed);
 
@@ -1170,8 +1170,13 @@ where
 
     // helpers
     fn new_from_pinned(pinned: P, zero_memory: bool) -> Self {
+        let len = pinned.len();
+
+        let mut pinned = pinned;
+        unsafe { pinned.set_len(0) };
+
         Self {
-            len: pinned.len().into(),
+            len: len.into(),
             capacity: pinned.capacity().into(),
             maximum_capacity: pinned.capacity_state().maximum_concurrent_capacity().into(),
             pinned: pinned.into(),
@@ -1231,7 +1236,7 @@ where
     pub(crate) fn write(&self, idx: usize, value: T) {
         let pinned = unsafe { &mut *self.pinned.get() };
         let ptr = unsafe { pinned.get_ptr_mut(idx) }.expect(ERR_FAILED_TO_PUSH);
-        unsafe { *ptr = value };
+        unsafe { std::ptr::write(ptr, value) };
     }
 
     fn write_many<Iter: Iterator<Item = T>>(&self, beg_idx: usize, values: Iter) {
@@ -1494,7 +1499,6 @@ mod tests {
     fn ok_at_num_threads() {
         use std::thread::available_parallelism;
         let default_parallelism_approx = available_parallelism().expect("is-ok").get();
-        dbg!(default_parallelism_approx);
 
         let num_threads = default_parallelism_approx;
         let num_items_per_thread = 16384;
@@ -1567,7 +1571,6 @@ mod tests {
         // actually no new allocation yet; precisely additional memory for 10 pairs of pointers is used
         assert_eq!(bag.capacity(), 2usize.pow(10)); // first fragment capacity
 
-        dbg!(bag.maximum_capacity(), 2usize.pow(10) * 30);
         assert_eq!(bag.maximum_capacity(), 2usize.pow(10) * 30); // now it can safely reach 2^10 * 30
 
         // FixedVec<_>: pre-allocated, exact and strict
