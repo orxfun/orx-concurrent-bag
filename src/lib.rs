@@ -10,7 +10,7 @@
 //!
 //! Note that `ConcurrentBag` is write only (with the safe api), see [`ConcurrentVec`](https://crates.io/crates/orx-concurrent-vec) for a read & write variant.
 //!
-//! # Examples
+//! ## Examples
 //!
 //! Safety guarantees to push to the bag with a shared reference makes it easy to share the bag among threads. `std::sync::Arc` can be used; however, it is not required as demonstrated below.
 //!
@@ -81,7 +81,7 @@
 //! let bag: ConcurrentBag<_> = split_vec.into();
 //! ```
 //!
-//! # Concurrent State and Properties
+//! ## Concurrent State and Properties
 //!
 //! The concurrent state is modeled simply by an atomic length. Combination of this state and `PinnedConcurrentCol` leads to the following properties:
 //! * Writing to a position of the collection does not block other writes, multiple writes can happen concurrently.
@@ -94,9 +94,9 @@
 //!
 //! <div id="section-benchmarks"></div>
 //!
-//! # Benchmarks
+//! ## Benchmarks
 //!
-//! ## Performance with `push`
+//! ### Performance with `push`
 //!
 //! *You may find the details of the benchmarks at [benches/collect_with_push.rs](https://github.com/orxfun/orx-concurrent-bag/blob/main/benches/collect_with_push.rs).*
 //!
@@ -116,7 +116,7 @@
 //!
 //! <img src="https://raw.githubusercontent.com/orxfun/orx-concurrent-bag/main/docs/img/bench_collect_with_push.PNG" alt="https://raw.githubusercontent.com/orxfun/orx-concurrent-bag/main/docs/img/bench_collect_with_push.PNG" />
 //!
-//! ## Performance with `extend`
+//! ### Performance with `extend`
 //!
 //! *You may find the details of the benchmarks at [benches/collect_with_extend.rs](https://github.com/orxfun/orx-concurrent-bag/blob/main/benches/collect_with_extend.rs).*
 //!
@@ -146,9 +146,9 @@
 //!
 //! <div id="section-performance-notes"></div>
 //!
-//! ## Performance Notes
+//! ### Performance Notes
 //!
-//! ### How many times and how long we spin?
+//! #### How many times and how long we spin?
 //!
 //! There is only one waiting or spinning condition of the push and extend methods: whenever the underlying pinned vector needs to grow. Note that growth with pinned vector is copy free. Therefore, when it spins, all it waits for is the allocation. Further, note that number of times we will allocate, and hence spin, is deterministic.
 //!
@@ -158,11 +158,11 @@
 //! * If we use a `SplitVec<_, Linear>` with constant fragment lengths of 1_024, we will allocate 15 equal capacity fragments.
 //! * If we use the strict `FixedVec<_>`, we have to pre-allocate a safe amount and can never grow beyond this number. Therefore, there will never be any spinning.
 //!
-//! ### False Sharing and How to Avoid
+//! #### False Sharing and How to Avoid
 //!
 //! [`ConcurrentBag::push`] method is implementation is simple, lock-free and efficient. However, we need to be aware of the potential [false sharing](https://en.wikipedia.org/wiki/False_sharing) risk which might lead to significant performance degradation. Fortunately, it is possible to avoid in many cases.
 //!
-//! #### When?
+//! ##### When?
 //!
 //! Performance degradation due to false sharing might be observed specifically when both of the following conditions hold:
 //! * **small data**: data to be pushed is small, the more elements fitting in a cache line the bigger the risk,
@@ -170,7 +170,7 @@
 //!
 //! The example above fits this situation. Each thread only performs one multiplication and addition in between pushing elements, and the elements to be pushed are very small, just one `usize`.
 //!
-//! #### Why?
+//! ##### Why?
 //!
 //! * `ConcurrentBag` assigns unique positions to each value to be pushed. There is no *true* sharing among threads in the position level.
 //! * However, cache lines contain more than one position.
@@ -180,7 +180,7 @@
 //!
 //! Following two methods could be approached to deal with this problem.
 //!
-//! #### Solution-I: `extend` rather than `push`
+//! ##### Solution-I: `extend` rather than `push`
 //!
 //! One very simple, effective and memory efficient solution to this problem is to use [`ConcurrentBag::extend`] rather than `push` in *small data & little work* situations.
 //!
@@ -217,11 +217,11 @@
 //! });
 //! ```
 //!
-//! #### Solution-II: Padding
+//! ##### Solution-II: Padding
 //!
 //! Another common approach to deal with false sharing is to add padding (unused bytes) between elements. There exist wrappers which automatically adds cache padding, such as crossbeam's [`CachePadded`](https://docs.rs/crossbeam-utils/latest/crossbeam_utils/struct.CachePadded.html). In other words, instead of using a `ConcurrentBag<T>`, we can use `ConcurrentBag<CachePadded<T>>`. However, this solution leads to increased memory requirement.
 //!
-//! # License
+//! ## License
 //!
 //! This library is licensed under MIT license. See LICENSE for details.
 
