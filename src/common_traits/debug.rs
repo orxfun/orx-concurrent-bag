@@ -4,13 +4,8 @@ use std::fmt::Debug;
 
 impl<T: Debug, P: PinnedVec<T>> Debug for ConcurrentBag<T, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        unsafe { self.correct_pinned_len() };
-
         f.debug_struct("ConcurrentBag")
-            .field("pinned", &unsafe { self.iter().collect::<Vec<_>>() })
-            .field("len", &self.len())
-            .field("capacity", &self.capacity())
-            .field("maximum_capacity", &self.maximum_capacity())
+            .field("core", self.core())
             .finish()
     }
 }
@@ -32,7 +27,7 @@ mod tests {
         let str = format!("{:?}", bag);
         assert_eq!(
             str,
-            "ConcurrentBag { pinned: ['a', 'b', 'c', 'd', 'e'], len: 5, capacity: 12, maximum_capacity: 17179869180 }"
+            "ConcurrentBag { core: PinnedConcurrentCol { pinned_vec: \"PinnedVec\", state: ConcurrentBagState { len: 5 }, capacity: CapacityState { capacity: 12, maximum_capacity: 17179869180 } } }"
         );
     }
 }
