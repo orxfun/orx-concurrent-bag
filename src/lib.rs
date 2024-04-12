@@ -10,6 +10,17 @@
 //!
 //! Note that `ConcurrentBag` is write only (with the safe api), see [`ConcurrentVec`](https://crates.io/crates/orx-concurrent-vec) for a read & write variant.
 //!
+//!
+//! ## Comparison to `ConcurrentOrderedBag`
+//!
+//! Note that [`ConcurrentOrderedBag`](https://crates.io/crates/orx-concurrent-ordered-bag) is a similar structure with the following differences.
+//!
+//! ||`ConcurrentBag`|`ConcurrentOrderedBag`|
+//! |---|---|---|
+//! | Ordering | Cannot guarantee that the elements are in a desired order, the order of the collected elements depends on the time different threads push elements. | Allows to write to particular position enabling concurrently collecting elements in a desired order (fits very well to a parallel map). |
+//! | Safety of Growth | ConcurrentBag can be filled with safe `push` and `extend` calls. It makes sure that each position will be written to exactly once and there exists no race condition. | ConcurrentOrderedBag allows for more freedom by allowing to write to arbitrary positions of the collection. However, focusing on efficiency, it does not keep track of the filled positions. It is the caller's responsibility that every position is written only once and bag does not contain any gaps. Therefore, growth happens through unsafe `set_value`, `set_values` and `set_n_values` methods. However, as it will be clear in the examples that it is conveniently possible to achieve this guarantees with the help of [`ConcurrentIter`](https://crates.io/crates/orx-concurrent-iter). |
+//! | Safety of `into_inner` | Into inner call cannot fail. Underlying pinned vector of a ConcurrentBag is always gap-free and valid; therefore, the bag can be converted into the underlying vector without care at any point in time. | Due to the above-mentioned reasons, ConcurrentOrderedBag might contain gaps. `into_inner` call provides some useful metrics such as number of elements pushed and maximum index of the vector; however, it cannot guarantee that the bag is gap-free. Therefore, the caller is required to take responsibility to unwrap the pinned vec or not through an unsafe call. |
+//!
 //! ## Examples
 //!
 //! Safety guarantees to push to the bag with a shared reference makes it easy to share the bag among threads. `std::sync::Arc` can be used; however, it is not required as demonstrated below.
