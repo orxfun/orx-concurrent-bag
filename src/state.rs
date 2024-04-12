@@ -12,7 +12,7 @@ pub struct ConcurrentBagState {
 
 impl ConcurrentState for ConcurrentBagState {
     #[inline(always)]
-    fn zero_memory() -> bool {
+    fn zero_memory(&self) -> bool {
         false
     }
 
