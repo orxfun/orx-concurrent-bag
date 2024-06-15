@@ -61,6 +61,10 @@ impl ConcurrentState for ConcurrentBagState {
 
     #[inline(always)]
     fn update_after_write(&self, _: usize, _: usize) {}
+
+    fn try_get_no_gap_len(&self) -> Option<usize> {
+        Some(self.len())
+    }
 }
 
 impl ConcurrentBagState {

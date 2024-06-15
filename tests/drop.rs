@@ -1,6 +1,8 @@
 use orx_concurrent_bag::*;
 use test_case::test_matrix;
 
+const NUM_RERUNS: usize = 1024;
+
 #[test_matrix(
     [
         FixedVec::new(100000),
@@ -10,13 +12,15 @@ use test_case::test_matrix;
     ],
     [124, 348, 1024, 2587, 42578]
 )]
-fn dropped_as_bag<P: PinnedVec<String>>(pinned_vec: P, len: usize) {
-    let num_threads = 4;
-    let num_items_per_thread = len / num_threads;
+fn dropped_as_bag<P: PinnedVec<String> + Clone>(pinned_vec: P, len: usize) {
+    for _ in 0..NUM_RERUNS {
+        let num_threads = 4;
+        let num_items_per_thread = len / num_threads;
 
-    let bag = fill_bag(pinned_vec, len);
+        let bag = fill_bag(pinned_vec.clone(), len);
 
-    assert_eq!(bag.len(), num_threads * num_items_per_thread);
+        assert_eq!(bag.len(), num_threads * num_items_per_thread);
+    }
 }
 
 #[test_matrix(
@@ -28,14 +32,16 @@ fn dropped_as_bag<P: PinnedVec<String>>(pinned_vec: P, len: usize) {
     ],
     [124, 348, 1024, 2587, 42578]
 )]
-fn dropped_after_into_inner<P: PinnedVec<String>>(pinned_vec: P, len: usize) {
-    let num_threads = 4;
-    let num_items_per_thread = len / num_threads;
+fn dropped_after_into_inner<P: PinnedVec<String> + Clone>(pinned_vec: P, len: usize) {
+    for _ in 0..NUM_RERUNS {
+        let num_threads = 4;
+        let num_items_per_thread = len / num_threads;
 
-    let bag = fill_bag(pinned_vec, len);
+        let bag = fill_bag(pinned_vec.clone(), len);
 
-    let inner = bag.into_inner();
-    assert_eq!(inner.len(), num_threads * num_items_per_thread);
+        let inner = bag.into_inner();
+        assert_eq!(inner.len(), num_threads * num_items_per_thread);
+    }
 }
 
 fn fill_bag<P: PinnedVec<String>>(pinned_vec: P, len: usize) -> ConcurrentBag<String, P> {
