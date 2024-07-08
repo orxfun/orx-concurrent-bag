@@ -277,6 +277,49 @@ where
         }
     }
 
+    /// Returns a mutable reference to the element at the `index`-th position of the bag.
+    /// It returns `None` when index is out of bounds.
+    ///
+    /// # Safety
+    ///
+    /// At first it might be confusing that `get` method is unsafe; however, `get_mut` is safe.
+    /// This is due to `&mut self` requirement of the `get_mut` method.
+    ///
+    /// The following paragraph from `get` docs demonstrates an example that could lead to undefined behavior.
+    /// The race condition (with `get`) could be observed in the following unsafe usage.
+    /// Say we have a `bag` of `char`s and we allocate memory to store incoming characters, say 4 positions.
+    /// If the following events happen in the exact order in time, we might have undefined behavior (UB):
+    /// * `bag.push('a')` is called from thread#1.
+    /// * `bag` atomically increases the `len` to 1.
+    /// * thread#2 calls `bag.get(0)` which is now in bounds.
+    /// * thread#2 receives uninitialized value (UB).
+    /// * thread#1 completes writing `'a'` to the 0-th position (one moment too late).
+    ///
+    /// This scenario would not compile with `get_mut` requiring a `&mut self`. Therefore, `get_mut` is safe.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use orx_concurrent_bag::*;
+    ///
+    /// let mut bag = ConcurrentBag::new();
+    ///
+    /// bag.push('a');
+    /// bag.extend(['b', 'c', 'd']);
+    ///
+    /// assert_eq!(unsafe { bag.get_mut(4) }, None);
+    ///
+    /// *bag.get_mut(1).unwrap() = 'x';
+    /// assert_eq!(unsafe { bag.get(1) }, Some(&'x'));
+    /// ```
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+        if index < self.len() {
+            unsafe { self.core.get_mut(index) }
+        } else {
+            None
+        }
+    }
+
     /// Returns an iterator to elements of the bag.
     ///
     /// Iteration of elements is in the order the push method is called.
@@ -310,6 +353,51 @@ where
     /// ```
     pub unsafe fn iter(&self) -> impl Iterator<Item = &T> {
         self.core.iter(self.len())
+    }
+
+    /// Returns an iterator to elements of the bag.
+    ///
+    /// Iteration of elements is in the order the push method is called.
+    ///
+    /// # Safety
+    ///
+    /// At first it might be confusing that `iter` method is unsafe; however, `iter_mut` is safe.
+    /// This is due to `&mut self` requirement of the `iter_mut` method.
+    ///
+    /// The following paragraph from `iter` docs demonstrates an example that could lead to undefined behavior.
+    /// The `iter` method is unsafe due to the possibility of the following scenario:
+    /// * a thread reserves a position in the bag,
+    /// * this increases the length of the bag by one, which includes this new element to the iteration,
+    /// * however, before writing the value of the element completes, iterator reaches this element and reads uninitialized value.
+    ///
+    /// This scenario would not compile with `get_mut` requiring a `&mut self`. Therefore, `get_mut` is safe.
+    ///
+    /// Note that [`ConcurrentBag`] is meant to be write-only, or even, grow-only.
+    /// See [`ConcurrentVec`](https://crates.io/crates/orx-concurrent-vec) for a read-and-write variant which
+    /// * guarantees that reading and writing never happen concurrently, and hence,
+    /// * allows safe iteration or access to already written elements of the concurrent vector,
+    /// * with a minor additional cost of values being wrapped by an `Option`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use orx_concurrent_bag::ConcurrentBag;
+    ///
+    /// let mut bag = ConcurrentBag::new();
+    /// bag.push("a".to_string());
+    /// bag.push("b".to_string());
+    ///
+    /// for x in bag.iter_mut() {
+    ///     *x = format!("{}!", x);
+    /// }
+    ///
+    /// let mut iter = unsafe { bag.iter() };
+    /// assert_eq!(iter.next(), Some(&String::from("a!")));
+    /// assert_eq!(iter.next(), Some(&String::from("b!")));
+    /// assert_eq!(iter.next(), None);
+    /// ```
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        unsafe { self.core.iter_mut(self.len()) }
     }
 
     /// Concurrent, thread-safe method to push the given `value` to the back of the bag, and returns the position or index of the pushed value.

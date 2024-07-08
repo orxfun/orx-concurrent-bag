@@ -144,6 +144,38 @@ fn iter() {
 }
 
 #[test]
+fn get_mut() {
+    let mut bag = ConcurrentBag::new();
+
+    bag.push("a".to_string());
+    bag.push("b".to_string());
+    bag.push("c".to_string());
+    bag.push("d".to_string());
+
+    *bag.get_mut(2).unwrap() = "c!".to_string();
+
+    let vec: Vec<_> = unsafe { bag.iter() }.collect();
+    assert_eq!(vec, ["a", "b", "c!", "d"]);
+}
+
+#[test]
+fn iter_mut() {
+    let mut bag = ConcurrentBag::new();
+
+    bag.push("a".to_string());
+    bag.push("b".to_string());
+    bag.push("c".to_string());
+    bag.push("d".to_string());
+
+    for x in bag.iter_mut().filter(|x| x.as_str() != "c") {
+        *x = format!("{}!", x);
+    }
+
+    let vec: Vec<_> = unsafe { bag.iter() }.collect();
+    assert_eq!(vec, ["a!", "b!", "c", "d!"]);
+}
+
+#[test]
 fn reserve_maximum_capacity() {
     // SplitVec<_, Doubling>
     let bag: ConcurrentBag<char> = ConcurrentBag::new();
