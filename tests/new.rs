@@ -1,10 +1,9 @@
 use orx_concurrent_bag::*;
+use orx_pinned_vec::IntoConcurrentPinnedVec;
 
 #[test]
 fn new_len_empty_clear() {
-    fn test<P: PinnedVec<char>>(bag: ConcurrentBag<char, P>) {
-        assert!(!bag.zeroes_memory_on_allocation());
-
+    fn test<P: IntoConcurrentPinnedVec<char>>(bag: ConcurrentBag<char, P>) {
         let mut bag = bag;
 
         assert!(bag.is_empty());
@@ -18,9 +17,10 @@ fn new_len_empty_clear() {
         bag.push('b');
         bag.push('c');
         bag.push('d');
+        bag.push('e');
 
         assert!(!bag.is_empty());
-        assert_eq!(4, bag.len());
+        assert_eq!(5, bag.len());
 
         bag.clear();
         assert!(bag.is_empty());

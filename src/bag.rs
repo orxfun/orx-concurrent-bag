@@ -1,8 +1,7 @@
 use crate::state::ConcurrentBagState;
 use orx_pinned_concurrent_col::PinnedConcurrentCol;
-use orx_pinned_vec::PinnedVec;
+use orx_pinned_vec::IntoConcurrentPinnedVec;
 use orx_split_vec::{Doubling, SplitVec};
-use std::ops::{Deref, DerefMut};
 
 /// An efficient, convenient and lightweight grow-only concurrent data structure allowing high performance concurrent collection.
 ///
@@ -94,14 +93,14 @@ use std::ops::{Deref, DerefMut};
 /// No read & write race condition exists.
 pub struct ConcurrentBag<T, P = SplitVec<T, Doubling>>
 where
-    P: PinnedVec<T>,
+    P: IntoConcurrentPinnedVec<T>,
 {
-    core: PinnedConcurrentCol<T, P, ConcurrentBagState>,
+    core: PinnedConcurrentCol<T, P::ConPinnedVec, ConcurrentBagState>,
 }
 
 impl<T, P> ConcurrentBag<T, P>
 where
-    P: PinnedVec<T>,
+    P: IntoConcurrentPinnedVec<T>,
 {
     /// Consumes the concurrent bag and returns the underlying pinned vector.
     ///
@@ -270,10 +269,9 @@ where
     /// assert_eq!(averages.len(), 10);
     /// ```
     pub unsafe fn get(&self, index: usize) -> Option<&T> {
-        if index < self.len() {
-            unsafe { self.core.get(index) }
-        } else {
-            None
+        match index < self.core.state().written_len() {
+            true => unsafe { self.core.get(index) },
+            false => None,
         }
     }
 
@@ -352,7 +350,7 @@ where
     /// assert_eq!(iter.next(), None);
     /// ```
     pub unsafe fn iter(&self) -> impl Iterator<Item = &T> {
-        self.core.iter(self.len())
+        unsafe { self.core.iter(self.core.state().written_len()) }
     }
 
     /// Returns an iterator to elements of the bag.
@@ -819,15 +817,56 @@ where
     /// Note that although both methods are unsafe, it is much easier to achieve required safety guarantees with `extend` or `extend_n_items`;
     /// hence, they must be preferred unless there is a good reason to acquire mutable slices.
     /// One such example case is to copy results directly into the output's slices, which could be more performant in a very critical scenario.
-    pub unsafe fn n_items_buffer_as_mut_slices<'a>(
+    pub unsafe fn n_items_buffer_as_mut_slices(
         &self,
         num_items: usize,
-    ) -> (usize, P::SliceMutIter<'a>) {
+    ) -> (usize, P::SliceMutIter<'_>) {
         let begin_idx = self.core.state().fetch_increment_len(num_items);
         (
             begin_idx,
             self.core.n_items_buffer_as_mut_slices(begin_idx, num_items),
         )
+    }
+
+    /// Clears the concurrent bag.
+    pub fn clear(&mut self) {
+        unsafe { self.core.clear(self.core.state().len()) };
+    }
+
+    /// Note that [`ConcurrentBag::maximum_capacity`] returns the maximum possible number of elements that the underlying pinned vector can grow to without reserving maximum capacity.
+    ///
+    /// In other words, the pinned vector can automatically grow up to the [`ConcurrentBag::maximum_capacity`] with `write` and `write_n_items` methods, using only a shared reference.
+    ///
+    /// When required, this maximum capacity can be attempted to increase by this method with a mutable reference.
+    ///
+    /// Importantly note that maximum capacity does not correspond to the allocated memory.
+    ///
+    /// Among the common pinned vector implementations:
+    /// * `SplitVec<_, Doubling>`: supports this method; however, it does not require for any practical size.
+    /// * `SplitVec<_, Linear>`: is guaranteed to succeed and increase its maximum capacity to the required value.
+    /// * `FixedVec<_>`: is the most strict pinned vector which cannot grow even in a single-threaded setting. Currently, it will always return an error to this call.
+    ///
+    /// # Safety
+    /// This method is unsafe since the concurrent pinned vector might contain gaps. The vector must be gap-free while increasing the maximum capacity.
+    ///
+    /// This method can safely be called if entries in all positions 0..len are written.
+    pub fn reserve_maximum_capacity(&mut self, new_maximum_capacity: usize) -> usize {
+        unsafe {
+            self.core
+                .reserve_maximum_capacity(self.core.state().written_len(), new_maximum_capacity)
+        }
+    }
+
+    /// Returns the current allocated capacity of the collection.
+    pub fn capacity(&self) -> usize {
+        self.core.capacity()
+    }
+
+    /// Returns maximum possible capacity that the collection can reach without calling [`ConcurrentBag::reserve_maximum_capacity`].
+    ///
+    /// Importantly note that maximum capacity does not correspond to the allocated memory.
+    pub fn maximum_capacity(&self) -> usize {
+        self.core.maximum_capacity()
     }
 }
 
@@ -835,42 +874,19 @@ where
 
 impl<T, P> ConcurrentBag<T, P>
 where
-    P: PinnedVec<T>,
+    P: IntoConcurrentPinnedVec<T>,
 {
-    #[inline]
     pub(crate) fn new_from_pinned(pinned_vec: P) -> Self {
         let core = PinnedConcurrentCol::new_from_pinned(pinned_vec);
         Self { core }
     }
 
     #[inline]
-    pub(crate) fn core(&self) -> &PinnedConcurrentCol<T, P, ConcurrentBagState> {
+    pub(crate) fn core(&self) -> &PinnedConcurrentCol<T, P::ConPinnedVec, ConcurrentBagState> {
         &self.core
     }
 }
 
-// TRAITS
+unsafe impl<T: Sync, P: IntoConcurrentPinnedVec<T>> Sync for ConcurrentBag<T, P> {}
 
-impl<T, P> Deref for ConcurrentBag<T, P>
-where
-    P: PinnedVec<T>,
-{
-    type Target = PinnedConcurrentCol<T, P, ConcurrentBagState>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.core
-    }
-}
-
-impl<T, P> DerefMut for ConcurrentBag<T, P>
-where
-    P: PinnedVec<T>,
-{
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.core
-    }
-}
-
-unsafe impl<T: Sync, P: PinnedVec<T>> Sync for ConcurrentBag<T, P> {}
-
-unsafe impl<T: Send, P: PinnedVec<T>> Send for ConcurrentBag<T, P> {}
+unsafe impl<T: Send, P: IntoConcurrentPinnedVec<T>> Send for ConcurrentBag<T, P> {}
