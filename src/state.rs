@@ -1,5 +1,5 @@
 use orx_pinned_concurrent_col::{ConcurrentState, PinnedConcurrentCol, WritePermit};
-use orx_pinned_vec::PinnedVec;
+use orx_pinned_vec::ConcurrentPinnedVec;
 use std::{
     cmp::Ordering,
     sync::atomic::{self, AtomicUsize},
@@ -8,6 +8,7 @@ use std::{
 #[derive(Debug)]
 pub struct ConcurrentBagState {
     len: AtomicUsize,
+    written_len: AtomicUsize,
 }
 
 impl ConcurrentState for ConcurrentBagState {
@@ -19,12 +20,20 @@ impl ConcurrentState for ConcurrentBagState {
     fn new_for_pinned_vec<T, P: orx_fixed_vec::prelude::PinnedVec<T>>(pinned_vec: &P) -> Self {
         Self {
             len: pinned_vec.len().into(),
+            written_len: pinned_vec.len().into(),
+        }
+    }
+
+    fn new_for_con_pinned_vec<T, P: ConcurrentPinnedVec<T>>(_: &P, len: usize) -> Self {
+        Self {
+            len: len.into(),
+            written_len: len.into(),
         }
     }
 
     fn write_permit<T, P, S>(&self, col: &PinnedConcurrentCol<T, P, S>, idx: usize) -> WritePermit
     where
-        P: PinnedVec<T>,
+        P: ConcurrentPinnedVec<T>,
         S: ConcurrentState,
     {
         let capacity = col.capacity();
@@ -43,7 +52,7 @@ impl ConcurrentState for ConcurrentBagState {
         num_items: usize,
     ) -> WritePermit
     where
-        P: PinnedVec<T>,
+        P: ConcurrentPinnedVec<T>,
         S: ConcurrentState,
     {
         let capacity = col.capacity();
@@ -60,7 +69,9 @@ impl ConcurrentState for ConcurrentBagState {
     fn release_growth_handle(&self) {}
 
     #[inline(always)]
-    fn update_after_write(&self, _: usize, _: usize) {}
+    fn update_after_write(&self, _: usize, end_idx: usize) {
+        self.written_len.store(end_idx, atomic::Ordering::Release);
+    }
 
     fn try_get_no_gap_len(&self) -> Option<usize> {
         Some(self.len())
@@ -70,11 +81,16 @@ impl ConcurrentState for ConcurrentBagState {
 impl ConcurrentBagState {
     #[inline(always)]
     pub(crate) fn fetch_increment_len(&self, increment_by: usize) -> usize {
-        self.len.fetch_add(increment_by, atomic::Ordering::AcqRel)
+        self.len.fetch_add(increment_by, atomic::Ordering::SeqCst)
     }
 
     #[inline(always)]
     pub(crate) fn len(&self) -> usize {
-        self.len.load(atomic::Ordering::Relaxed)
+        self.len.load(atomic::Ordering::Acquire)
+    }
+
+    #[inline(always)]
+    pub(crate) fn written_len(&self) -> usize {
+        self.written_len.load(atomic::Ordering::Acquire)
     }
 }

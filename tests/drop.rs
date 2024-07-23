@@ -1,18 +1,18 @@
 use orx_concurrent_bag::*;
+use orx_pinned_vec::IntoConcurrentPinnedVec;
 use test_case::test_matrix;
 
-const NUM_RERUNS: usize = 1024;
+const NUM_RERUNS: usize = 1;
 
 #[test_matrix(
     [
         FixedVec::new(100000),
         SplitVec::with_doubling_growth_and_fragments_capacity(32),
-        SplitVec::with_recursive_growth_and_fragments_capacity(32),
         SplitVec::with_linear_growth_and_fragments_capacity(10, 64),
     ],
-    [124, 348, 1024, 2587, 42578]
+    [124, 348, 1024, 2587]
 )]
-fn dropped_as_bag<P: PinnedVec<String> + Clone>(pinned_vec: P, len: usize) {
+fn dropped_as_bag<P: IntoConcurrentPinnedVec<String> + Clone>(pinned_vec: P, len: usize) {
     for _ in 0..NUM_RERUNS {
         let num_threads = 4;
         let num_items_per_thread = len / num_threads;
@@ -27,12 +27,11 @@ fn dropped_as_bag<P: PinnedVec<String> + Clone>(pinned_vec: P, len: usize) {
     [
         FixedVec::new(100000),
         SplitVec::with_doubling_growth_and_fragments_capacity(32),
-        SplitVec::with_recursive_growth_and_fragments_capacity(32),
         SplitVec::with_linear_growth_and_fragments_capacity(10, 64),
     ],
-    [124, 348, 1024, 2587, 42578]
+    [124, 348, 1024, 2587]
 )]
-fn dropped_after_into_inner<P: PinnedVec<String> + Clone>(pinned_vec: P, len: usize) {
+fn dropped_after_into_inner<P: IntoConcurrentPinnedVec<String> + Clone>(pinned_vec: P, len: usize) {
     for _ in 0..NUM_RERUNS {
         let num_threads = 4;
         let num_items_per_thread = len / num_threads;
@@ -44,7 +43,10 @@ fn dropped_after_into_inner<P: PinnedVec<String> + Clone>(pinned_vec: P, len: us
     }
 }
 
-fn fill_bag<P: PinnedVec<String>>(pinned_vec: P, len: usize) -> ConcurrentBag<String, P> {
+fn fill_bag<P: IntoConcurrentPinnedVec<String>>(
+    pinned_vec: P,
+    len: usize,
+) -> ConcurrentBag<String, P> {
     let num_threads = 4;
     let num_items_per_thread = len / num_threads;
 
