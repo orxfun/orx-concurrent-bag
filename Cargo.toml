@@ -1,6 +1,6 @@
 [package]
 name = "orx-concurrent-bag"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2021"
 authors = ["orxfun <orx.ugur.arikan@gmail.com>"]
 description = "An efficient, convenient and lightweight grow-only concurrent data structure allowing high performance concurrent collection."
@@ -10,11 +10,11 @@ keywords = ["concurrency", "bag", "data-structures", "atomic", "lock-free"]
 categories = ["data-structures", "concurrency", "rust-patterns"]
 
 [dependencies]
-orx-pseudo-default = "1.0"
-orx-pinned-vec = "3.0"
-orx-fixed-vec = "3.1"
-orx-split-vec = "3.1"
-orx-pinned-concurrent-col = "2.1"
+orx-pseudo-default = "1.2.0"
+orx-pinned-vec = "3.2.0"
+orx-fixed-vec = "3.2.0"
+orx-split-vec = "3.2.0"
+orx-pinned-concurrent-col = "2.2.0"
 
 [dev-dependencies]
 criterion = "0.5.1"
