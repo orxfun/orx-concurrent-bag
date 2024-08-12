@@ -38,45 +38,6 @@
 //! assert_eq!(vec_from_bag, expected);
 //! ```
 //!
-//! ### Construction
-//!
-//! `ConcurrentBag` can be constructed by wrapping any pinned vector; i.e., `ConcurrentBag<T>` implements `From<P: PinnedVec<T>>`. Likewise, a concurrent vector can be unwrapped without any allocation to the underlying pinned vector with `into_inner` method.
-//!
-//! Further, there exist `with_` methods to directly construct the concurrent bag with common pinned vector implementations.
-//!
-//! ```rust
-//! use orx_concurrent_bag::*;
-//!
-//! // default pinned vector -> SplitVec<T, Doubling>
-//! let bag: ConcurrentBag<char> = ConcurrentBag::new();
-//! let bag: ConcurrentBag<char> = Default::default();
-//! let bag: ConcurrentBag<char> = ConcurrentBag::with_doubling_growth();
-//! let bag: ConcurrentBag<char, SplitVec<char, Doubling>> = ConcurrentBag::with_doubling_growth();
-//!
-//! let bag: ConcurrentBag<char> = SplitVec::new().into();
-//! let bag: ConcurrentBag<char, SplitVec<char, Doubling>> = SplitVec::new().into();
-//!
-//! // SplitVec with [Linear](https://docs.rs/orx-split-vec/latest/orx_split_vec/struct.Linear.html) growth
-//! // each fragment will have capacity 2^10 = 1024
-//! // and the split vector can grow up to 32 fragments
-//! let bag: ConcurrentBag<char, SplitVec<char, Linear>> = ConcurrentBag::with_linear_growth(10, 32);
-//! let bag: ConcurrentBag<char, SplitVec<char, Linear>> = SplitVec::with_linear_growth_and_fragments_capacity(10, 32).into();
-//!
-//! // [FixedVec](https://docs.rs/orx-fixed-vec/latest/orx_fixed_vec/) with fixed capacity.
-//! // Fixed vector cannot grow; hence, pushing the 1025-th element to this bag will cause a panic!
-//! let bag: ConcurrentBag<char, FixedVec<char>> = ConcurrentBag::with_fixed_capacity(1024);
-//! let bag: ConcurrentBag<char, FixedVec<char>> = FixedVec::new(1024).into();
-//! ```
-//!
-//! The pinned vector to be wrapped does not need to be empty.
-//!
-//! ```rust
-//! use orx_concurrent_bag::*;
-//!
-//! let split_vec: SplitVec<i32> = (0..1024).collect();
-//! let bag: ConcurrentBag<_> = split_vec.into();
-//! ```
-//!
 //! ## Concurrent State and Properties
 //!
 //! The concurrent state is modeled simply by an atomic length. Combination of this state and `PinnedConcurrentCol` leads to the following properties:
@@ -95,7 +56,7 @@
 //! | Write | Guarantees that each element is written exactly once via `push` or `extend` methods | Guarantees that each element is written exactly once via `push` or `extend` methods | Different in two ways. First, a position can be written multiple times. Second, an arbitrary element of the bag can be written at any time at any order using `set_value` and `set_values` methods. This provides a great flexibility while moving the safety responsibility to the caller; hence, the set methods are `unsafe`. |
 //! | Read | Mainly, a write-only collection. Concurrent reading of already pushed elements is through `unsafe` `get` and `iter` methods. The caller is required to avoid race conditions. | A write-and-read collection. Already pushed elements can safely be read through `get` and `iter` methods. | Not supported currently. Due to the flexible but unsafe nature of write operations, it is difficult to provide required safety guarantees as a caller. |
 //! | Ordering of Elements | Since write operations are through adding elements to the end of the pinned vector via `push` and `extend`, two multi-threaded executions of a code that collects elements into the bag might result in the elements being collected in different orders. | Since write operations are through adding elements to the end of the pinned vector via `push` and `extend`, two multi-threaded executions of a code that collects elements into the bag might result in the elements being collected in different orders. | This is the main goal of this collection, allowing to collect elements concurrently and in the correct order. Although this does not seem trivial; it can be achieved almost trivially when `ConcurrentOrderedBag` is used together with a [`ConcurrentIter`](https://crates.io/crates/orx-concurrent-iter). |
-//! | `into_inner` | Once the concurrent collection is completed, the bag can safely be converted to its underlying `PinnedVec<T>`. | Once the concurrent collection is completed, the bag can safely be converted to its underlying `PinnedVec<T>`. | Growing through flexible setters allowing to write to any position, `ConcurrentOrderedBag` has the risk of containing gaps. `into_inner` call provides some useful metrics such as whether the number of elements pushed elements match the  maximum index of the vector; however, it cannot guarantee that the bag is gap-free. The caller is required to take responsibility to unwrap to get the underlying `PinnedVec<T>` through an `unsafe` call. |
+//! | `into_inner` | Once the concurrent collection is completed, the bag can safely and cheaply be converted to its underlying `PinnedVec<T>`. | Once the concurrent collection is completed, the vec can safely be converted to its underlying `PinnedVec<ConcurrentOption<T>>`. Notice that elements are wrapped with a `ConcurrentOption` in order to provide thread safe concurrent read & write operations. | Growing through flexible setters allowing to write to any position, `ConcurrentOrderedBag` has the risk of containing gaps. `into_inner` call provides some useful metrics such as whether the number of elements pushed elements match the  maximum index of the vector; however, it cannot guarantee that the bag is gap-free. The caller is required to take responsibility to unwrap to get the underlying `PinnedVec<T>` through an `unsafe` call. |
 //! |||||
 //!
 //! <div id="section-benchmarks"></div>
