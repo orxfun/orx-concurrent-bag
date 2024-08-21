@@ -19,7 +19,7 @@ let bag = ConcurrentBag::new();
 
 let (num_threads, num_items_per_thread) = (4, 1_024);
 
-let bag_ref= &bag;
+let bag_ref = &bag;
 std::thread::scope(|s| {
     for i in 0..num_threads {
         s.spawn(move || {
@@ -31,7 +31,7 @@ std::thread::scope(|s| {
     }
 });
 
-let mut vec_from_bag: Vec<_> = bag.into_inner().iter().copied().collect();
+let mut vec_from_bag = bag.into_inner().to_vec();
 vec_from_bag.sort();
 let mut expected: Vec<_> = (0..num_threads).flat_map(|i| (0..num_items_per_thread).map(move |j| i * 1000 + j)).collect();
 expected.sort();
@@ -48,16 +48,6 @@ The concurrent state is modeled simply by an atomic length. Combination of this 
 * Underlying pinned vector is always valid and can be taken out any time by `into_inner(self)`.
 * Reading is only possible after converting the bag into the underlying `PinnedVec`.
 * ⟹ no read & write race condition exists.
-
-## Concurrent Friend Collections
-
-||[`ConcurrentBag`](https://crates.io/crates/orx-concurrent-bag)|[`ConcurrentVec`](https://crates.io/crates/orx-concurrent-vec)|[`ConcurrentOrderedBag`](https://crates.io/crates/orx-concurrent-ordered-bag)|
-|---|---|---|---|
-| Write | Guarantees that each element is written exactly once via `push` or `extend` methods | Guarantees that each element is written exactly once via `push` or `extend` methods | Different in two ways. First, a position can be written multiple times. Second, an arbitrary element of the bag can be written at any time at any order using `set_value` and `set_values` methods. This provides a great flexibility while moving the safety responsibility to the caller; hence, the set methods are `unsafe`. |
-| Read | Mainly, a write-only collection. Concurrent reading of already pushed elements is through `unsafe` `get` and `iter` methods. The caller is required to avoid race conditions. | A write-and-read collection. Already pushed elements can safely be read through `get` and `iter` methods. | Not supported currently. Due to the flexible but unsafe nature of write operations, it is difficult to provide required safety guarantees as a caller. |
-| Ordering of Elements | Since write operations are through adding elements to the end of the pinned vector via `push` and `extend`, two multi-threaded executions of a code that collects elements into the bag might result in the elements being collected in different orders. | Since write operations are through adding elements to the end of the pinned vector via `push` and `extend`, two multi-threaded executions of a code that collects elements into the bag might result in the elements being collected in different orders. | This is the main goal of this collection, allowing to collect elements concurrently and in the correct order. Although this does not seem trivial; it can be achieved almost trivially when `ConcurrentOrderedBag` is used together with a [`ConcurrentIter`](https://crates.io/crates/orx-concurrent-iter). |
-| `into_inner` | Once the concurrent collection is completed, the bag can safely and cheaply be converted to its underlying `PinnedVec<T>`. | Once the concurrent collection is completed, the vec can safely be converted to its underlying `PinnedVec<ConcurrentOption<T>>`. Notice that elements are wrapped with a `ConcurrentOption` in order to provide thread safe concurrent read & write operations. | Growing through flexible setters allowing to write to any position, `ConcurrentOrderedBag` has the risk of containing gaps. `into_inner` call provides some useful metrics such as whether the number of elements pushed elements match the  maximum index of the vector; however, it cannot guarantee that the bag is gap-free. The caller is required to take responsibility to unwrap to get the underlying `PinnedVec<T>` through an `unsafe` call. |
-|||||
 
 <div id="section-benchmarks"></div>
 
@@ -100,7 +90,7 @@ let iter = (0..num_items_per_thread).map(|j| i * 100000 + j);
 bag.extend(iter);
 ```
 
-However, we do not need to have perfect homogeneity or perfect information on the number of items to be pushed per thread to get the benefits of `extend`. We can simply `step_by` and extend by `batch_size` elements. A large enough `batch_size` so that batch size elements exceed a cache line would be sufficient prevent the dramatic performance degradation of false sharing.
+However, we do not need to have perfect homogeneity or perfect information on the number of items to be pushed per thread to get the benefits of `extend`. We can simply `step_by` and extend by `batch_size` elements. A large enough `batch_size` so that batch size elements exceed a cache line would be sufficient to prevent the dramatic performance degradation of false sharing.
 
 ```rust ignore
 // reserve batch_size positions at each iteration
@@ -111,16 +101,26 @@ for j in (0..num_items_per_thread).step_by(batch_size) {
 }
 ```
 
-Although concurrent collection via `ConcurrentBag::push` is highly efficient, collection with `ConcurrentBag::extend` certainly needs to be considered whenever possible as it changes the scale. As the graph below demonstrates, collection in batches of only 64 elements for while collecting tens of thousands of elements provides orders of magnitudes of improvement.
+Although concurrent collection via `ConcurrentBag::push` is highly efficient, collection with `ConcurrentBag::extend` certainly needs to be considered whenever possible as it changes the scale. As the graph below demonstrates, collection in batches of only 64 elements while collecting tens of thousands of elements provides orders of magnitudes of improvement.
 
 <img src="https://raw.githubusercontent.com/orxfun/orx-concurrent-bag/main/docs/img/bench_collect_with_extend.PNG" alt="https://raw.githubusercontent.com/orxfun/orx-concurrent-bag/main/docs/img/bench_collect_with_extend.PNG" />
+
+## Concurrent Friend Collections
+
+||[`ConcurrentBag`](https://crates.io/crates/orx-concurrent-bag)|[`ConcurrentVec`](https://crates.io/crates/orx-concurrent-vec)|[`ConcurrentOrderedBag`](https://crates.io/crates/orx-concurrent-ordered-bag)|
+|---|---|---|---|
+| Write | Guarantees that each element is written exactly once via `push` or `extend` methods | Guarantees that each element is written exactly once via `push` or `extend` methods | Different in two ways. First, a position can be written multiple times. Second, an arbitrary element of the bag can be written at any time at any order using `set_value` and `set_values` methods. This provides a great flexibility while moving the safety responsibility to the caller; hence, the set methods are `unsafe`. |
+| Read | Mainly, a write-only collection. Concurrent reading of already pushed elements is through `unsafe` `get` and `iter` methods. The caller is required to avoid race conditions. | A write-and-read collection. Already pushed elements can safely be read through `get` and `iter` methods. | Not supported currently. Due to the flexible but unsafe nature of write operations, it is difficult to provide required safety guarantees as a caller. |
+| Ordering of Elements | Since write operations are through adding elements to the end of the pinned vector via `push` and `extend`, two multi-threaded executions of a code that collects elements into the bag might result in the elements being collected in different orders. | Since write operations are through adding elements to the end of the pinned vector via `push` and `extend`, two multi-threaded executions of a code that collects elements into the bag might result in the elements being collected in different orders. | This is the main goal of this collection, allowing to collect elements concurrently and in the correct order. Although this does not seem trivial; it can be achieved almost trivially when `ConcurrentOrderedBag` is used together with a [`ConcurrentIter`](https://crates.io/crates/orx-concurrent-iter). |
+| `into_inner` | Once the concurrent collection is completed, the bag can safely and cheaply be converted to its underlying `PinnedVec<T>`. | Once the concurrent collection is completed, the vec can safely be converted to its underlying `PinnedVec<ConcurrentOption<T>>`. Notice that elements are wrapped with a `ConcurrentOption` in order to provide thread safe concurrent read & write operations. | Growing through flexible setters allowing to write to any position, `ConcurrentOrderedBag` has the risk of containing gaps. `into_inner` call provides some useful metrics such as whether the number of elements pushed elements match the  maximum index of the vector; however, it cannot guarantee that the bag is gap-free. The caller is required to take responsibility to unwrap to get the underlying `PinnedVec<T>` through an `unsafe` call. |
+|||||
 
 
 <div id="section-performance-notes"></div>
 
-### Performance Notes
+## Performance Notes
 
-#### How many times and how long we spin?
+### How many times and how long we spin?
 
 There is only one waiting or spinning condition of the push and extend methods: whenever the underlying `PinnedVec` needs to grow. Note that growth with pinned vector is copy free. Therefore, when it spins, all it waits for is the allocation. Since number of growth is deterministic, so is the number of spins.
 
@@ -130,7 +130,7 @@ For instance, assume that we will push a total of 15_000 elements concurrently t
 * If we use a `SplitVec<_, Linear>` with constant fragment lengths of 1_024, we will allocate 15 equal capacity fragments.
 * If we use the strict `FixedVec<_>`, we have to pre-allocate a safe amount and can never grow beyond this number. Therefore, there will never be any spinning.
 
-#### False Sharing
+### False Sharing
 
 We need to be aware of the potential [false sharing](https://en.wikipedia.org/wiki/False_sharing) risk which might lead to significant performance degradation when we are filling the bag with one by one with [`ConcurrentBag::push`].
 
@@ -144,7 +144,7 @@ The example above fits this situation. Each thread only performs one multiplicat
 * However, cache lines contain more than one position. One thread updating a particular position invalidates the entire cache line on an other thread.
 * Threads end up frequently reloading cache lines instead of doing the actual work of writing elements to the bag. This might lead to a significant performance degradation.
 
-#### `extend` to Avoid False Sharing
+### `extend` to Avoid False Sharing
 
 Assume that we are filling a `ConcurrentBag` from n threads. At any given point, thread A calls `extend` by passing in an iterator which will yield 64 elements. Concurrent bag will reserve 64 consecutive positions for this extend call. Concurrent push or extend calls from other threads will not have access to these positions. Assuming that size of 64 elements is large enough:
 * Thread A writing to these 64 positions will not invalidate cache lines of other threads. Similarly, other threads writing to their reserved positions will not invalidate thread A's cache line.
@@ -159,7 +159,7 @@ let (num_threads, num_items_per_thread) = (4, 1_024);
 let bag = ConcurrentBag::new();
 let batch_size = 64;
 
-let bag_ref= &bag;
+let bag_ref = &bag;
 std::thread::scope(|s| {
     for i in 0..num_threads {
         s.spawn(move || {
