@@ -67,7 +67,7 @@
 //!
 //! *You may find the details of the benchmarks at [benches/collect_with_push.rs](https://github.com/orxfun/orx-concurrent-bag/blob/main/benches/collect_with_push.rs).*
 //!
-//! In the experiment, `rayon`s parallel iterator and `ConcurrentBag`s `push` method are used to collect results from multiple threads.
+//! In the experiment, `rayon`s parallel iterator, `AppendOnlyVec`s and `ConcurrentBag`s `push` methods are used to collect results from multiple threads. Further, different underlying pinned vectors of the `ConcurrentBag` are evaluated.
 //!
 //! ```rust ignore
 //! // reserve and push one position at a time
@@ -76,11 +76,14 @@
 //! }
 //! ```
 //!
-//! We observe that `ConcurrentBag` allows for high performance concurrent collection of elements, which is achieved by simple for loops and `push` method which looks much like sequential code.
+//! <img src="https://raw.githubusercontent.com/orxfun/orx-concurrent-bag/main/docs/img/bench_collect_with_push.PNG" alt="https://raw.githubusercontent.com/orxfun/orx-concurrent-bag/main/docs/img/bench_collect_with_push.PNG" />
+//!
+//! We observe that `ConcurrentBag` allows for a highly efficient concurrent collection of elements:
+//! * The default `Doubling` growth strategy of the concurrent bag, which is the most flexible as it does not require any prior knowledge, already seems to outperform the alternatives. Hence, it can be used in most situations.
+//! * `Linear` growth strategy requires one argument determining the uniform fragment capacity of the underlying `SplitVec`. This strategy might be preferred whenever we would like to be more conservative about allocation. Recall that capacity of `Doubling`, similar to the standard Vec, grows exponentially; while as the name suggests `Linear` grows linearly.
+//! * Finally, `Fixed` growth strategy is the least flexible and requires perfect knowledge about the hard-constrained capacity (will panic if we exceed). Since it does not outperform `Doubling` or `Linear`, we do not necessarily required to use `Fixed` except for the rare cases where we want to allocate exactly the required memory that we know beforehand.
 //!
 //! The performance can further be improved by using `extend` method instead of `push`. You may see results in the next subsection and details in the <a href="#section-performance-notes">performance notes</a>.
-//!
-//! <img src="https://raw.githubusercontent.com/orxfun/orx-concurrent-bag/main/docs/img/bench_collect_with_push.PNG" alt="https://raw.githubusercontent.com/orxfun/orx-concurrent-bag/main/docs/img/bench_collect_with_push.PNG" />
 //!
 //! ### Performance with `extend`
 //!
@@ -94,7 +97,7 @@
 //! // reserve num_items_per_thread positions at a time
 //! // and then push as the iterator yields
 //! let iter = (0..num_items_per_thread).map(|j| i * 100000 + j);
-//! ref.extend(iter);
+//! bag.extend(iter);
 //! ```
 //!
 //! However, we do not need to have perfect homogeneity or perfect information on the number of items to be pushed per thread to get the benefits of `extend`. We can simply `step_by` and extend by `batch_size` elements. A large enough `batch_size` so that batch size elements exceed a cache line would be sufficient prevent the dramatic performance degradation of false sharing.
@@ -108,7 +111,7 @@
 //! }
 //! ```
 //!
-//! Using a batch size of 64 with `extend` provides a significant performance improvement.
+//! Although concurrent collection via `ConcurrentBag::push` is highly efficient, collection with `ConcurrentBag::extend` certainly needs to be considered whenever possible as it changes the scale. As the graph below demonstrates, collection in batches of only 64 elements for while collecting tens of thousands of elements provides orders of magnitudes of improvement.
 //!
 //! <img src="https://raw.githubusercontent.com/orxfun/orx-concurrent-bag/main/docs/img/bench_collect_with_extend.PNG" alt="https://raw.githubusercontent.com/orxfun/orx-concurrent-bag/main/docs/img/bench_collect_with_extend.PNG" />
 //!

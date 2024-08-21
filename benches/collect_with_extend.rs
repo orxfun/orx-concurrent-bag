@@ -1,8 +1,10 @@
+use append_only_vec::AppendOnlyVec;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use orx_concurrent_bag::*;
+use std::fmt::Debug;
 
 #[allow(dead_code)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 struct LargeData {
     a: [i32; 64],
 }
@@ -30,7 +32,30 @@ fn compute_large_data(i: usize, j: usize) -> LargeData {
     LargeData { a }
 }
 
-fn with_concurrent_bag<T: Sync, P: PinnedVec<T>>(
+fn validate<T: PartialEq + Eq + PartialOrd + Ord + Debug>(expected: &[T], other: &mut [T]) {
+    assert_eq!(expected.len(), other.len());
+    other.sort();
+    assert_eq!(expected, other);
+}
+
+fn seq<T>(
+    num_threads: usize,
+    num_items_per_thread: usize,
+    compute: fn(usize, usize) -> T,
+) -> Vec<T> {
+    let result: Vec<_> = (0..num_threads)
+        .into_iter()
+        .flat_map(|_| {
+            (0..num_items_per_thread)
+                .map(|j| std::hint::black_box(compute(j, j + 1)))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    result
+}
+
+fn with_concurrent_bag<T: Sync, P: IntoConcurrentPinnedVec<T>>(
     num_threads: usize,
     num_items_per_thread: usize,
     compute: fn(usize, usize) -> T,
@@ -39,11 +64,11 @@ fn with_concurrent_bag<T: Sync, P: PinnedVec<T>>(
 ) -> ConcurrentBag<T, P> {
     let bag_ref = &bag;
     std::thread::scope(|s| {
-        for i in 0..num_threads {
-            s.spawn(move || {
+        for _ in 0..num_threads {
+            s.spawn(|| {
                 for j in (0..num_items_per_thread).step_by(batch_size) {
                     let into_iter =
-                        (j..(j + batch_size)).map(|j| std::hint::black_box(compute(i, j)));
+                        (j..(j + batch_size)).map(|j| std::hint::black_box(compute(j, j + 1)));
                     bag_ref.extend(into_iter);
                 }
             });
@@ -53,7 +78,7 @@ fn with_concurrent_bag<T: Sync, P: PinnedVec<T>>(
     bag
 }
 
-fn with_rayon<T: Send + Sync + Clone + Copy>(
+fn rayon<T: Send + Sync + Clone + Copy>(
     num_threads: usize,
     num_items_per_thread: usize,
     compute: fn(usize, usize) -> T,
@@ -62,9 +87,9 @@ fn with_rayon<T: Send + Sync + Clone + Copy>(
 
     let result: Vec<_> = (0..num_threads)
         .into_par_iter()
-        .flat_map(|i| {
+        .flat_map(|_| {
             (0..num_items_per_thread)
-                .map(move |j| std::hint::black_box(compute(i, j)))
+                .map(|j| std::hint::black_box(compute(j, j + 1)))
                 .collect::<Vec<_>>()
         })
         .collect();
@@ -72,8 +97,27 @@ fn with_rayon<T: Send + Sync + Clone + Copy>(
     result
 }
 
+fn append_only_vec<T: Send + Sync + Clone + Copy>(
+    num_threads: usize,
+    num_items_per_thread: usize,
+    compute: fn(usize, usize) -> T,
+    vec: AppendOnlyVec<T>,
+) -> AppendOnlyVec<T> {
+    std::thread::scope(|s| {
+        for _ in 0..num_threads {
+            s.spawn(|| {
+                for j in 0..num_items_per_thread {
+                    vec.push(std::hint::black_box(compute(j, j + 1)));
+                }
+            });
+        }
+    });
+
+    vec
+}
+
 fn bench_grow(c: &mut Criterion) {
-    let thread_info = [(4, 16384), (4, 65536)];
+    let thread_info = [(8, 4096), (8, 16384)];
 
     let mut group = c.benchmark_group("grow");
 
@@ -84,18 +128,97 @@ fn bench_grow(c: &mut Criterion) {
         );
 
         let max_len = num_threads * num_items_per_thread;
+        let fragment_size = 2usize.pow(12);
+        let num_linear_fragments = (max_len / fragment_size) + 1;
+
+        let compute = compute_data_i32;
+
+        let mut expected = seq(num_threads, num_items_per_thread, compute);
+        expected.sort();
+        validate(
+            &expected,
+            &mut rayon(num_threads, num_items_per_thread, compute),
+        );
+
+        validate(
+            &expected,
+            &mut append_only_vec(
+                num_threads,
+                num_items_per_thread,
+                compute,
+                AppendOnlyVec::new(),
+            )
+            .into_iter()
+            .collect::<Vec<_>>(),
+        );
+
+        validate(
+            &expected,
+            &mut with_concurrent_bag(
+                num_threads,
+                num_items_per_thread,
+                compute,
+                64,
+                ConcurrentBag::with_doubling_growth(),
+            )
+            .into_inner()
+            .to_vec(),
+        );
+
+        validate(
+            &expected,
+            &mut with_concurrent_bag(
+                num_threads,
+                num_items_per_thread,
+                compute,
+                64,
+                ConcurrentBag::with_linear_growth(12, num_linear_fragments),
+            )
+            .into_inner()
+            .to_vec(),
+        );
+
+        validate(
+            &expected,
+            &mut with_concurrent_bag(
+                num_threads,
+                num_items_per_thread,
+                compute,
+                64,
+                ConcurrentBag::with_fixed_capacity(num_threads * num_items_per_thread),
+            )
+            .into_inner()
+            .to_vec(),
+        );
 
         // rayon
 
         group.bench_with_input(BenchmarkId::new("with_rayon", &treatment), &(), |b, _| {
             b.iter(|| {
-                black_box(with_rayon(
+                black_box(rayon(
                     black_box(num_threads),
                     black_box(num_items_per_thread),
-                    compute_data_i32,
+                    compute,
                 ))
             })
         });
+
+        // APPEND-ONLY-VEC
+
+        group.bench_with_input(
+            BenchmarkId::new("append_only_vec", &treatment),
+            &(),
+            |b, _| {
+                b.iter(|| {
+                    black_box(append_only_vec(
+                        black_box(num_threads),
+                        black_box(num_items_per_thread),
+                        compute,
+                        AppendOnlyVec::new(),
+                    ))
+                })
+            },
+        );
 
         // ConcurrentBag
 
@@ -117,7 +240,7 @@ fn bench_grow(c: &mut Criterion) {
                         black_box(with_concurrent_bag(
                             black_box(num_threads),
                             black_box(num_items_per_thread),
-                            compute_data_i32,
+                            compute,
                             batch_size,
                             ConcurrentBag::with_doubling_growth(),
                         ))
@@ -125,8 +248,6 @@ fn bench_grow(c: &mut Criterion) {
                 },
             );
 
-            let fragment_size = 2usize.pow(12);
-            let num_linear_fragments = (max_len / fragment_size) + 1;
             group.bench_with_input(
                 BenchmarkId::new(name("Linear(12)"), &treatment),
                 &(),
@@ -135,7 +256,7 @@ fn bench_grow(c: &mut Criterion) {
                         black_box(with_concurrent_bag(
                             black_box(num_threads),
                             black_box(num_items_per_thread),
-                            compute_data_i32,
+                            compute,
                             batch_size,
                             ConcurrentBag::with_linear_growth(12, num_linear_fragments),
                         ))
@@ -148,7 +269,7 @@ fn bench_grow(c: &mut Criterion) {
                     black_box(with_concurrent_bag(
                         black_box(num_threads),
                         black_box(num_items_per_thread),
-                        compute_data_i32,
+                        compute,
                         batch_size,
                         ConcurrentBag::with_fixed_capacity(num_threads * num_items_per_thread),
                     ))

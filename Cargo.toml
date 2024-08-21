@@ -1,6 +1,6 @@
 [package]
 name = "orx-concurrent-bag"
-version = "2.3.0"
+version = "2.3.1"
 edition = "2021"
 authors = ["orxfun <orx.ugur.arikan@gmail.com>"]
 description = "An efficient, convenient and lightweight grow-only concurrent data structure allowing high performance concurrent collection."
@@ -16,12 +16,12 @@ orx-fixed-vec = "3.3"
 orx-split-vec = "3.3"
 orx-pinned-concurrent-col = "2.3"
 
-
 [dev-dependencies]
 criterion = "0.5.1"
 rand = "0.8.5"
 rayon = "1.9.0"
 test-case = "3.3.1"
+append-only-vec = "0.1.5"
 
 [[bench]]
 name = "collect_with_extend"
