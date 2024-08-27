@@ -57,7 +57,7 @@ The concurrent state is modeled simply by an atomic length. Combination of this 
 
 *You may find the details of the benchmarks at [benches/collect_with_push.rs](https://github.com/orxfun/orx-concurrent-bag/blob/main/benches/collect_with_push.rs).*
 
-In the experiment, `rayon`s parallel iterator, `AppendOnlyVec`s and `ConcurrentBag`s `push` methods are used to collect results from multiple threads. Further, different underlying pinned vectors of the `ConcurrentBag` are evaluated. 
+In the experiment, `rayon`s parallel iterator, and push methods of `AppendOnlyVec`, `boxcar::Vec` and `ConcurrentBag` are used to collect results from multiple threads. Further, different underlying pinned vectors of the `ConcurrentBag` are evaluated. 
 
 ```rust ignore
 // reserve and push one position at a time

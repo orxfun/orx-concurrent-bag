@@ -116,6 +116,25 @@ fn append_only_vec<T: Send + Sync + Clone + Copy>(
     vec
 }
 
+fn boxcar<T: Send + Sync + Clone + Copy>(
+    num_threads: usize,
+    num_items_per_thread: usize,
+    compute: fn(usize, usize) -> T,
+    vec: boxcar::Vec<T>,
+) -> boxcar::Vec<T> {
+    std::thread::scope(|s| {
+        for _ in 0..num_threads {
+            s.spawn(|| {
+                for j in 0..num_items_per_thread {
+                    vec.push(std::hint::black_box(compute(j, j + 1)));
+                }
+            });
+        }
+    });
+
+    vec
+}
+
 fn bench_grow(c: &mut Criterion) {
     let thread_info = [(8, 4096), (8, 16384)];
 
@@ -131,7 +150,7 @@ fn bench_grow(c: &mut Criterion) {
         let fragment_size = 2usize.pow(12);
         let num_linear_fragments = (max_len / fragment_size) + 1;
 
-        let compute = compute_data_i32;
+        let compute = compute_large_data;
 
         let mut expected = seq(num_threads, num_items_per_thread, compute);
         expected.sort();
@@ -147,6 +166,18 @@ fn bench_grow(c: &mut Criterion) {
                 num_items_per_thread,
                 compute,
                 AppendOnlyVec::new(),
+            )
+            .into_iter()
+            .collect::<Vec<_>>(),
+        );
+
+        validate(
+            &expected,
+            &mut boxcar(
+                num_threads,
+                num_items_per_thread,
+                compute,
+                boxcar::Vec::new(),
             )
             .into_iter()
             .collect::<Vec<_>>(),
@@ -193,7 +224,7 @@ fn bench_grow(c: &mut Criterion) {
 
         // rayon
 
-        group.bench_with_input(BenchmarkId::new("with_rayon", &treatment), &(), |b, _| {
+        group.bench_with_input(BenchmarkId::new("rayon", &treatment), &(), |b, _| {
             b.iter(|| {
                 black_box(rayon(
                     black_box(num_threads),
@@ -219,6 +250,19 @@ fn bench_grow(c: &mut Criterion) {
                 })
             },
         );
+
+        // BOXCAR
+
+        group.bench_with_input(BenchmarkId::new("boxcar", &treatment), &(), |b, _| {
+            b.iter(|| {
+                black_box(boxcar(
+                    black_box(num_threads),
+                    black_box(num_items_per_thread),
+                    compute,
+                    boxcar::Vec::new(),
+                ))
+            })
+        });
 
         // ConcurrentBag
 

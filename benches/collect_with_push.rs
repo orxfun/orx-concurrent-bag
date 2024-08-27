@@ -88,6 +88,25 @@ fn with_append_only_vec<T: Send + Sync + Clone + Copy>(
     vec
 }
 
+fn with_boxcar<T: Send + Sync + Clone + Copy>(
+    num_threads: usize,
+    num_items_per_thread: usize,
+    compute: fn(usize, usize) -> T,
+    vec: boxcar::Vec<T>,
+) -> boxcar::Vec<T> {
+    std::thread::scope(|s| {
+        for _ in 0..num_threads {
+            s.spawn(|| {
+                for j in 0..num_items_per_thread {
+                    vec.push(std::hint::black_box(compute(j, j + 1)));
+                }
+            });
+        }
+    });
+
+    vec
+}
+
 fn bench_grow(c: &mut Criterion) {
     let thread_info = [(8, 4096), (8, 16384)];
 
@@ -101,6 +120,8 @@ fn bench_grow(c: &mut Criterion) {
 
         let max_len = num_threads * num_items_per_thread;
 
+        let compute = compute_data_i32;
+
         // RAYON
 
         group.bench_with_input(BenchmarkId::new("rayon", &treatment), &(), |b, _| {
@@ -108,7 +129,7 @@ fn bench_grow(c: &mut Criterion) {
                 black_box(with_rayon(
                     black_box(num_threads),
                     black_box(num_items_per_thread),
-                    compute_data_i32,
+                    compute,
                 ))
             })
         });
@@ -123,12 +144,25 @@ fn bench_grow(c: &mut Criterion) {
                     black_box(with_append_only_vec(
                         black_box(num_threads),
                         black_box(num_items_per_thread),
-                        compute_data_i32,
+                        compute,
                         AppendOnlyVec::new(),
                     ))
                 })
             },
         );
+
+        // BOXCAR
+
+        group.bench_with_input(BenchmarkId::new("boxcar", &treatment), &(), |b, _| {
+            b.iter(|| {
+                black_box(with_boxcar(
+                    black_box(num_threads),
+                    black_box(num_items_per_thread),
+                    compute,
+                    boxcar::Vec::new(),
+                ))
+            })
+        });
 
         // WITH-SCOPE
 
@@ -140,7 +174,7 @@ fn bench_grow(c: &mut Criterion) {
                     black_box(with_concurrent_bag(
                         black_box(num_threads),
                         black_box(num_items_per_thread),
-                        compute_data_i32,
+                        compute,
                         ConcurrentBag::with_doubling_growth(),
                     ))
                 })
@@ -157,7 +191,7 @@ fn bench_grow(c: &mut Criterion) {
                     black_box(with_concurrent_bag(
                         black_box(num_threads),
                         black_box(num_items_per_thread),
-                        compute_data_i32,
+                        compute,
                         ConcurrentBag::with_linear_growth(12, num_linear_fragments),
                     ))
                 })
@@ -172,7 +206,7 @@ fn bench_grow(c: &mut Criterion) {
                     black_box(with_concurrent_bag(
                         black_box(num_threads),
                         black_box(num_items_per_thread),
-                        compute_data_i32,
+                        compute,
                         ConcurrentBag::with_fixed_capacity(num_threads * num_items_per_thread),
                     ))
                 })
