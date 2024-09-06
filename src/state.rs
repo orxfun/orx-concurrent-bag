@@ -1,9 +1,9 @@
-use orx_pinned_concurrent_col::{ConcurrentState, PinnedConcurrentCol, WritePermit};
-use orx_pinned_vec::ConcurrentPinnedVec;
-use std::{
+use core::{
     cmp::Ordering,
     sync::atomic::{self, AtomicUsize},
 };
+use orx_pinned_concurrent_col::{ConcurrentState, PinnedConcurrentCol, WritePermit};
+use orx_pinned_vec::ConcurrentPinnedVec;
 
 #[derive(Debug)]
 pub struct ConcurrentBagState {
@@ -56,8 +56,8 @@ impl<T> ConcurrentState<T> for ConcurrentBagState {
         let last_idx = begin_idx + num_items - 1;
 
         match (begin_idx.cmp(&capacity), last_idx.cmp(&capacity)) {
-            (_, std::cmp::Ordering::Less) => WritePermit::JustWrite,
-            (std::cmp::Ordering::Greater, _) => WritePermit::Spin,
+            (_, core::cmp::Ordering::Less) => WritePermit::JustWrite,
+            (core::cmp::Ordering::Greater, _) => WritePermit::Spin,
             _ => WritePermit::GrowThenWrite,
         }
     }

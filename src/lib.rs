@@ -192,6 +192,7 @@
     clippy::missing_panics_doc,
     clippy::todo
 )]
+#![no_std]
 
 mod bag;
 mod common_traits;
