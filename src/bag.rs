@@ -90,7 +90,7 @@ use orx_split_vec::{Doubling, SplitVec};
 /// * Only one growth can happen at a given time.
 /// * Underlying pinned vector can be extracted any time.
 /// * Safe reading is only possible after converting the bag into the underlying `PinnedVec`.
-/// No read & write race condition exists.
+///   No read & write race condition exists.
 pub struct ConcurrentBag<T, P = SplitVec<T, Doubling>>
 where
     P: IntoConcurrentPinnedVec<T>,
