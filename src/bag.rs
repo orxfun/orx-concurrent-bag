@@ -17,6 +17,7 @@ use orx_split_vec::{Doubling, SplitVec};
 ///
 /// ```rust
 /// use orx_concurrent_bag::*;
+/// use orx_iterable::*;
 ///
 /// let (num_threads, num_items_per_thread) = (4, 1_024);
 ///
@@ -111,6 +112,7 @@ where
     ///
     /// ```rust
     /// use orx_concurrent_bag::*;
+    /// use orx_iterable::*;
     ///
     /// let bag = ConcurrentBag::new();
     ///
@@ -415,6 +417,7 @@ where
     ///
     /// ```rust
     /// use orx_concurrent_bag::*;
+    /// use orx_iterable::*;
     ///
     /// let (num_threads, num_items_per_thread) = (4, 1_024);
     ///
@@ -493,6 +496,7 @@ where
     ///
     /// ```rust
     /// use orx_concurrent_bag::*;
+    /// use orx_iterable::*;
     ///
     /// let (num_threads, num_items_per_thread) = (4, 1_024);
     ///
@@ -567,6 +571,7 @@ where
     ///
     /// ```rust
     /// use orx_concurrent_bag::*;
+    /// use orx_iterable::*;
     ///
     /// let (num_threads, num_items_per_thread) = (4, 1_024);
     ///
@@ -708,6 +713,7 @@ where
     ///
     /// ```rust
     /// use orx_concurrent_bag::*;
+    /// use orx_iterable::*;
     ///
     /// let (num_threads, num_items_per_thread) = (4, 1_024);
     ///

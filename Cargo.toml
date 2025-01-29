@@ -1,6 +1,6 @@
 [package]
 name = "orx-concurrent-bag"
-version = "2.8.0"
+version = "2.9.0"
 edition = "2021"
 authors = ["orxfun <orx.ugur.arikan@gmail.com>"]
 description = "An efficient, convenient and lightweight grow-only concurrent data structure allowing high performance concurrent collection."
@@ -11,18 +11,19 @@ categories = ["data-structures", "concurrency", "rust-patterns", "no-std"]
 
 [dependencies]
 orx-pseudo-default = { version = "1.4", default-features = false }
-orx-pinned-vec = "3.11"
-orx-fixed-vec = "3.11"
-orx-split-vec = "3.11"
-orx-pinned-concurrent-col = "2.9"
+orx-pinned-vec = "3.12"
+orx-fixed-vec = "3.12"
+orx-split-vec = "3.12"
+orx-pinned-concurrent-col = "2.10"
 
 [dev-dependencies]
 criterion = "0.5.1"
-rand = "0.8.5"
-rayon = "1.9.0"
+rand = "0.9.0"
+rayon = "1.10.0"
 test-case = "3.3.1"
-append-only-vec = "0.1.5"
-boxcar = "0.2.5"
+append-only-vec = "0.1.7"
+boxcar = "0.2.8"
+orx-iterable = "1.1.1"
 
 [[bench]]
 name = "collect_with_extend"
