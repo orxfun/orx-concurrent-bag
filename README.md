@@ -1,6 +1,7 @@
 # orx-concurrent-bag
 
 [![orx-concurrent-bag crate](https://img.shields.io/crates/v/orx-concurrent-bag.svg)](https://crates.io/crates/orx-concurrent-bag)
+[![orx-concurrent-bag crate](https://img.shields.io/crates/d/orx-concurrent-bag.svg)](https://crates.io/crates/orx-concurrent-bag)
 [![orx-concurrent-bag documentation](https://docs.rs/orx-concurrent-bag/badge.svg)](https://docs.rs/orx-concurrent-bag)
 
 An efficient, convenient and lightweight grow-only concurrent data structure allowing high performance concurrent collection.
@@ -190,4 +191,4 @@ Contributions are welcome! If you notice an error, have a question or think some
 
 ## License
 
-This library is licensed under MIT license. See LICENSE for details.
+Dual-licensed under [Apache 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT).
