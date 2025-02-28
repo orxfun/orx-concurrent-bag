@@ -1,6 +1,6 @@
 use crate::state::ConcurrentBagState;
 use orx_pinned_concurrent_col::PinnedConcurrentCol;
-use orx_pinned_vec::IntoConcurrentPinnedVec;
+use orx_pinned_vec::{ConcurrentPinnedVec, IntoConcurrentPinnedVec};
 use orx_split_vec::{Doubling, SplitVec};
 
 /// An efficient, convenient and lightweight grow-only concurrent data structure allowing high performance concurrent collection.
@@ -826,7 +826,10 @@ where
     pub unsafe fn n_items_buffer_as_mut_slices(
         &self,
         num_items: usize,
-    ) -> (usize, P::SliceMutIter<'_>) {
+    ) -> (
+        usize,
+        <P::ConPinnedVec as ConcurrentPinnedVec<T>>::SliceMutIter<'_>,
+    ) {
         let begin_idx = self.core.state().fetch_increment_len(num_items);
         (
             begin_idx,
