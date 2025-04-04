@@ -801,7 +801,7 @@ where
         IntoIter: IntoIterator<Item = T>,
     {
         let begin_idx = self.core.state().fetch_increment_len(num_items);
-        self.core.write_n_items(begin_idx, num_items, values);
+        unsafe { self.core.write_n_items(begin_idx, num_items, values) };
         begin_idx
     }
 
@@ -831,10 +831,9 @@ where
         <P::ConPinnedVec as ConcurrentPinnedVec<T>>::SliceMutIter<'_>,
     ) {
         let begin_idx = self.core.state().fetch_increment_len(num_items);
-        (
-            begin_idx,
-            self.core.n_items_buffer_as_mut_slices(begin_idx, num_items),
-        )
+        (begin_idx, unsafe {
+            self.core.n_items_buffer_as_mut_slices(begin_idx, num_items)
+        })
     }
 
     /// Clears the concurrent bag.
