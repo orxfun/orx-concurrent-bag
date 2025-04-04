@@ -1,7 +1,7 @@
 [package]
 name = "orx-concurrent-bag"
-version = "2.11.0"
-edition = "2021"
+version = "3.0.0"
+edition = "2024"
 authors = ["orxfun <orx.ugur.arikan@gmail.com>"]
 description = "An efficient, convenient and lightweight grow-only concurrent data structure allowing high performance concurrent collection."
 license = "MIT OR Apache-2.0"
