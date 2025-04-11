@@ -73,7 +73,7 @@ fn run_test<P: IntoConcurrentPinnedVec<i32> + Clone + 'static>(
 }
 
 // #[test_case(FixedVec::new(524288))]
-// #[test_case(SplitVec::with_doubling_growth_and_fragments_capacity(32))]
+// #[test_case(SplitVec::with_doubling_growth_and_max_concurrent_capacity())]
 // #[test_case(SplitVec::with_linear_growth_and_fragments_capacity(6, 8192))]
 // #[test_case(SplitVec::with_linear_growth_and_fragments_capacity(10, 512))]
 // #[test_case(SplitVec::with_linear_growth_and_fragments_capacity(14, 32))]
@@ -83,7 +83,7 @@ fn exhaustive<P: IntoConcurrentPinnedVec<i32> + Clone + 'static>(pinned: P) {
 }
 
 #[test_case(FixedVec::new(3000))]
-#[test_case(SplitVec::with_doubling_growth_and_fragments_capacity(32))]
+#[test_case(SplitVec::with_doubling_growth_and_max_concurrent_capacity())]
 #[test_case(SplitVec::with_linear_growth_and_fragments_capacity(6, 40))]
 #[test_case(SplitVec::with_linear_growth_and_fragments_capacity(10, 10))]
 #[test_case(SplitVec::with_linear_growth_and_fragments_capacity(14, 10))]

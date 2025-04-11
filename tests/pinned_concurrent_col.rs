@@ -155,11 +155,19 @@ fn reserve_maximum_capacity() {
     // SplitVec<_, Doubling>
     let bag: ConcurrentBag<char> = ConcurrentBag::new();
     assert_eq!(bag.capacity(), 4); // only allocates the first fragment of 4
+
+    #[cfg(target_pointer_width = "64")]
     assert_eq!(bag.maximum_capacity(), 17_179_869_180); // it can grow safely & exponentially
+    #[cfg(target_pointer_width = "32")]
+    assert_eq!(bag.maximum_capacity(), 2_147_483_644); // it can grow safely & exponentially
 
     let bag: ConcurrentBag<char, _> = ConcurrentBag::with_doubling_growth();
     assert_eq!(bag.capacity(), 4);
+
+    #[cfg(target_pointer_width = "64")]
     assert_eq!(bag.maximum_capacity(), 17_179_869_180);
+    #[cfg(target_pointer_width = "32")]
+    assert_eq!(bag.maximum_capacity(), 2_147_483_644);
 
     // SplitVec<_, Linear>
     let mut bag: ConcurrentBag<char, _> = ConcurrentBag::with_linear_growth(10, 20);
