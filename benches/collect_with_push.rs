@@ -1,5 +1,5 @@
 use append_only_vec::AppendOnlyVec;
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use orx_concurrent_bag::*;
 
 #[allow(dead_code)]
@@ -31,7 +31,7 @@ fn compute_large_data(i: usize, j: usize) -> LargeData {
     LargeData { a }
 }
 
-fn with_concurrent_bag<T: Sync, P: IntoConcurrentPinnedVec<T>>(
+fn with_concurrent_bag<T: Send, P: IntoConcurrentPinnedVec<T>>(
     num_threads: usize,
     num_items_per_thread: usize,
     compute: fn(usize, usize) -> T,
@@ -50,7 +50,7 @@ fn with_concurrent_bag<T: Sync, P: IntoConcurrentPinnedVec<T>>(
     bag
 }
 
-fn with_rayon<T: Send + Sync + Clone + Copy>(
+fn with_rayon<T: Send + Clone + Copy>(
     num_threads: usize,
     num_items_per_thread: usize,
     compute: fn(usize, usize) -> T,
