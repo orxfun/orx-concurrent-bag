@@ -270,7 +270,10 @@ where
     /// assert_eq!(measurements.len(), 100);
     /// assert_eq!(averages.len(), 10);
     /// ```
-    pub unsafe fn get(&self, index: usize) -> Option<&T> {
+    pub unsafe fn get(&self, index: usize) -> Option<&T>
+    where
+        T: Sync,
+    {
         match index < self.core.state().written_len() {
             true => unsafe { self.core.get(index) },
             false => None,
@@ -351,7 +354,10 @@ where
     /// assert_eq!(iter.next(), Some(&'b'));
     /// assert_eq!(iter.next(), None);
     /// ```
-    pub unsafe fn iter(&self) -> impl Iterator<Item = &T> {
+    pub unsafe fn iter(&self) -> impl Iterator<Item = &T>
+    where
+        T: Sync,
+    {
         unsafe { self.core.iter(self.core.state().written_len()) }
     }
 
@@ -531,7 +537,10 @@ where
     /// There exist wrappers which automatically adds cache padding, such as crossbeam's [`CachePadded`](https://docs.rs/crossbeam-utils/latest/crossbeam_utils/struct.CachePadded.html).
     /// In other words, instead of using a `ConcurrentBag<T>`, we can use `ConcurrentBag<CachePadded<T>>`.
     /// However, this solution leads to increased memory requirement.
-    pub fn push(&self, value: T) -> usize {
+    pub fn push(&self, value: T) -> usize
+    where
+        T: Send,
+    {
         let idx = self.core.state().fetch_increment_len(1);
         // # SAFETY: ConcurrentBag ensures that each `idx` will be written only and exactly once.
         unsafe { self.core.write(idx, value) };
@@ -658,6 +667,7 @@ where
     where
         IntoIter: IntoIterator<Item = T, IntoIter = Iter>,
         Iter: Iterator<Item = T> + ExactSizeIterator,
+        T: Send,
     {
         let values = values.into_iter();
         let num_items = values.len();
@@ -799,6 +809,7 @@ where
     pub unsafe fn extend_n_items<IntoIter>(&self, values: IntoIter, num_items: usize) -> usize
     where
         IntoIter: IntoIterator<Item = T>,
+        T: Send,
     {
         let begin_idx = self.core.state().fetch_increment_len(num_items);
         unsafe { self.core.write_n_items(begin_idx, num_items, values) };
@@ -829,7 +840,10 @@ where
     ) -> (
         usize,
         <P::ConPinnedVec as ConcurrentPinnedVec<T>>::SliceMutIter<'_>,
-    ) {
+    )
+    where
+        T: Send,
+    {
         let begin_idx = self.core.state().fetch_increment_len(num_items);
         (begin_idx, unsafe {
             self.core.n_items_buffer_as_mut_slices(begin_idx, num_items)
@@ -895,6 +909,6 @@ where
     }
 }
 
-unsafe impl<T: Sync, P: IntoConcurrentPinnedVec<T>> Sync for ConcurrentBag<T, P> {}
+unsafe impl<T, P: IntoConcurrentPinnedVec<T>> Sync for ConcurrentBag<T, P> {}
 
-unsafe impl<T: Send, P: IntoConcurrentPinnedVec<T>> Send for ConcurrentBag<T, P> {}
+unsafe impl<T, P: IntoConcurrentPinnedVec<T>> Send for ConcurrentBag<T, P> {}
