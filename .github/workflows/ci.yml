@@ -11,7 +11,6 @@ env:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -31,10 +30,6 @@ jobs:
       run: rustup target add i686-unknown-linux-musl
     - name: Install wasm target
       run: rustup target add wasm32v1-none
-    - name: Install miri
-      run: rustup component add --toolchain nightly-x86_64-unknown-linux-gnu miri
-    - name: Install no-std-check
-      run: cargo install cargo-no-std-check
       
     - name: Build
       run: cargo build --verbose
@@ -52,9 +47,21 @@ jobs:
 
     - name: Clippy
       run: cargo clippy -- -D warnings --verbose
-
-    - name: Miri
-      run: cargo +nightly miri test --verbose
-
+  
     - name: NoStd
       run: cargo +nightly no-std-check
+
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Install Rust nightly with miri
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: miri
+
+    - name: Run miri tests
+      env:
+        CARGO_INCREMENTAL: 0
+      run: cargo +nightly miri test --lib --bins --tests --verbose
