@@ -14,7 +14,7 @@ orx-pseudo-default = { version = "2.1.0", default-features = false }
 orx-pinned-vec = { version = "3.21.0", default-features = false }
 orx-fixed-vec = { version = "3.22.0", default-features = false }
 orx-split-vec = { version = "3.22.0", default-features = false }
-orx-pinned-concurrent-col = { version = "2.18.0", default-features = false }
+orx-pinned-concurrent-col = { git = "https://github.com/orxfun/orx-pinned-concurrent-col/", branch = "expose-unsafe-ptr", default-features = false }
 
 [dev-dependencies]
 test-case = "3.3.1"
