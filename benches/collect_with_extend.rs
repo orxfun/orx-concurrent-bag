@@ -45,7 +45,6 @@ fn seq<T>(
     compute: fn(usize, usize) -> T,
 ) -> Vec<T> {
     let result: Vec<_> = (0..num_threads)
-        .into_iter()
         .flat_map(|_| {
             (0..num_items_per_thread)
                 .map(|j| std::hint::black_box(compute(j, j + 1)))
